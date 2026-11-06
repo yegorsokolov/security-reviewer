@@ -14,11 +14,14 @@ SCHEMA_VERSION = "1"
 # trailing newline through) and are ASCII-only.
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _CWE_RE = re.compile(r"CWE-[0-9]+")
-_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z")
-_URL_RE = re.compile(r"https?://[^\s\x00-\x1f\x7f/?#]+[^\s\x00-\x1f\x7f]*")
-# C0, DEL, C1 (includes NEL U+0085), LINE SEPARATOR, PARAGRAPH SEPARATOR.
-_CTRL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
-_PATH_CTRL_RE = re.compile("[\x00-\x1f\x7f]")
+_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z")
+# Printable ASCII only (no whitespace, control or bidi characters); non-empty host.
+_URL_RE = re.compile(r"https?://(?![/?#])[\x21-\x7e]+")
+# C0, DEL, C1 (includes NEL U+0085), LINE SEPARATOR, PARAGRAPH SEPARATOR,
+# bidi embedding/override/isolate controls and LRM/RLM.
+_CTRL_RE = re.compile(
+    "[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f]")
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 MAX_JSON_BYTES = 1024 * 1024
 MAX_EVIDENCE = 50
@@ -28,6 +31,9 @@ MAX_VALIDATED_BY = 200
 MAX_REMEDIATION_SUMMARY = 2000
 MAX_PATCH = 20000
 MAX_NOTES = 5000
+MAX_PATH = 4096
+MAX_LOCATIONS = 100
+MAX_TIMESTAMP = 40
 
 
 class Severity(str, Enum):
@@ -87,6 +93,15 @@ class ValidationError(ValueError):
 
 
 # ---------------------------------------------------------------- helpers
+def _no_dup_pairs(pairs):
+    seen = set()
+    for k, _ in pairs:
+        if k in seen:
+            raise ValidationError([f"$: duplicate JSON key {k!r}"])
+        seen.add(k)
+    return dict(pairs)
+
+
 def _is_int(v):
     return type(v) is int
 
@@ -124,6 +139,9 @@ def _str(data, path, key, errs, *, maxlen=None, minlen=1, regex=None,
         return None
     if maxlen is not None and len(v) > maxlen:
         errs.append(f"{fp}: must be at most {maxlen} characters")
+        return None
+    if _SURROGATE_RE.search(v):
+        errs.append(f"{fp}: must not contain lone surrogate code points")
         return None
     if nonl and _CTRL_RE.search(v):
         errs.append(f"{fp}: must not contain control characters or newlines")
@@ -171,7 +189,7 @@ def _list(data, path, key, errs):
 
 def _valid_path(p):
     return (p != "" and not p.startswith("/") and "\\" not in p
-            and not _PATH_CTRL_RE.search(p)
+            and not _CTRL_RE.search(p)
             and all(seg not in ("", ".", "..") for seg in p.split("/"))
             and not re.match(r"[A-Za-z]:", p))
 
@@ -205,11 +223,11 @@ class Location:
                     ("end_line", "start_column", "end_column"), errs):
             if not isinstance(data, dict):
                 return None
-        p = _str(data, path, "path", errs)
+        p = _str(data, path, "path", errs, maxlen=MAX_PATH)
         if p is not None and not _valid_path(p):
             errs.append(f"{_p(path, 'path')}: must be a repo-relative POSIX path "
                         "(no absolute, empty, '.' or '..' segment, backslash "
-                        "or control character)")
+                        "or control, line-separator or bidi character)")
         sl = _posint(data, path, "start_line", errs)
         el = _posint(data, path, "end_line", errs)
         sc = _posint(data, path, "start_column", errs)
@@ -275,7 +293,7 @@ class Remediation:
             rp = f"{_p(path, 'references')}[{i}]"
             if not isinstance(r, str):
                 errs.append(f"{rp}: must be a string")
-            elif len(r) > MAX_URL_LEN or not _URL_RE.fullmatch(r):
+            elif (len(r) > MAX_URL_LEN or not _URL_RE.fullmatch(r)):
                 errs.append(f"{rp}: must be an http(s) URL")
             else:
                 refs.append(r)
@@ -316,7 +334,7 @@ class Validation:
         m = _enum(data, path, "method", ValidationMethod, errs)
         by = _str(data, path, "validated_by", errs, maxlen=MAX_VALIDATED_BY,
                    nonl=True)
-        at = _str(data, path, "validated_at", errs)
+        at = _str(data, path, "validated_at", errs, maxlen=MAX_TIMESTAMP)
         if at is not None and not _ts_ok(at):
             errs.append(f"{_p(path, 'validated_at')}: must be an RFC3339 UTC "
                         "timestamp ending in Z")
@@ -381,11 +399,20 @@ class Finding:
 
     @classmethod
     def from_json(cls, text):
-        if isinstance(text, (str, bytes, bytearray)) and len(text) > MAX_JSON_BYTES:
-            raise ValidationError(
-                [f"$: input too large (max {MAX_JSON_BYTES} bytes)"])
+        too_large = ValidationError(
+            [f"$: input too large (max {MAX_JSON_BYTES} bytes)"])
+        if isinstance(text, (bytes, bytearray)):
+            if len(text) > MAX_JSON_BYTES:
+                raise too_large
+        elif isinstance(text, str):
+            # len(text) <= bytes, so reject early; else measure real UTF-8 size.
+            if (len(text) > MAX_JSON_BYTES
+                    or len(text.encode("utf-8", "surrogatepass")) > MAX_JSON_BYTES):
+                raise too_large
         try:
-            data = json.loads(text)
+            data = json.loads(text, object_pairs_hook=_no_dup_pairs)
+        except ValidationError:
+            raise
         except RecursionError:
             raise ValidationError(["$: JSON too deeply nested"]) from None
         except Exception as e:
@@ -419,6 +446,9 @@ class Finding:
         lst = _list(data, "$", "locations", errs)
         if lst is not None and not lst:
             errs.append("locations: must contain at least one location")
+        if lst is not None and len(lst) > MAX_LOCATIONS:
+            errs.append(f"locations: must contain at most {MAX_LOCATIONS} items")
+            lst = None
         for i, x in enumerate(lst or []):
             r = Location._parse(x, f"locations[{i}]", errs)
             if r:
@@ -483,7 +513,13 @@ class Finding:
             raise ValidationError(
                 [f"status: illegal transition {self.status.value} -> "
                  f"{new_status.value}"])
-        cand = replace(self, status=new_status,
-                       validation=validation if validation is not None
-                       else self.validation)
-        return Finding.from_dict(cand.to_dict())
+        try:
+            cand = replace(self, status=new_status,
+                           validation=validation if validation is not None
+                           else self.validation)
+            return Finding.from_dict(cand.to_dict())
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ValidationError(
+                [f"$: invalid finding or validation ({type(e).__name__})"]) from None

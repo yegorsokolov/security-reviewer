@@ -314,6 +314,93 @@ class T(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 h.transition("rejected", bad)
 
+    def test_url_charset(self):
+        for bad in ("https://a.com/\x9b", "https://a.com/\u202e", "https://a.com/\u2066",
+                    "https://a.com/\u200e", "https://a.com/\u2028", "https://a.com/\x7f",
+                    "https://a.com/\u00e9", "https://a.com/a b", "https:///x"):
+            d = base()
+            d["remediation"]["references"] = [bad]
+            self.bad(d, "remediation.references[0]")
+
+    def test_bidi_and_c1_single_line(self):
+        for ch in ("\u202a", "\u202e", "\u2066", "\u2069", "\u200e", "\u200f", "\x9b"):
+            self.bad(self.mod(title="a" + ch + "b"), "title")
+            self.bad(self.mod(category="a" + ch), "category")
+            d = validated()
+            d["validation"]["validated_by"] = ch
+            self.bad(d, "validation.validated_by")
+            d = base()
+            d["locations"][0]["path"] = "a/" + ch + "b.py"
+            self.bad(d, "path")
+        for ch in ("\x85", "\u2028", "\u2029"):
+            d = base()
+            d["locations"][0]["path"] = "a" + ch
+            self.bad(d, "path")
+
+    def test_json_size_utf8_bytes(self):
+        pad = "\u20ac" * 400000  # 400k chars, 1.2M bytes
+        text = json.dumps(dict(base(), description=pad), ensure_ascii=False)
+        self.assertLess(len(text), 1024 * 1024)
+        with self.assertRaises(ValidationError) as c:
+            Finding.from_json(text)
+        self.assertIn("too large", c.exception.errors[0])
+
+    def test_duplicate_keys(self):
+        t = json.dumps(base())[:-1] + ', "id": "F-2"}'
+        with self.assertRaises(ValidationError) as c:
+            Finding.from_json(t)
+        self.assertIn("duplicate", c.exception.errors[0])
+        t = '{"path": "a", "path": "b", "start_line": 1}'
+        d = json.dumps(base()).replace('{"path": "a/b.py", "start_line": 3}', t)
+        with self.assertRaises(ValidationError):
+            Finding.from_json(d)
+
+    def test_caps(self):
+        d = validated()
+        d["validation"]["validated_at"] = "2026-01-02T03:04:05." + "1" * 9 + "Z"
+        Finding.from_dict(d)
+        d["validation"]["validated_at"] = "2026-01-02T03:04:05." + "1" * 10 + "Z"
+        self.bad(d, "validated_at")
+        d["validation"]["validated_at"] = "2026-01-02T03:04:05.Z"
+        self.bad(d, "validated_at")
+        d = base()
+        d["locations"][0]["path"] = "a" * 4097
+        self.bad(d, "path")
+        d["locations"][0]["path"] = "a" * 4096
+        Finding.from_dict(d)
+        d["locations"] = [{"path": "a", "start_line": 1}] * 100
+        Finding.from_dict(d)
+        d["locations"] = [{"path": "a", "start_line": 1}] * 101
+        self.bad(d, "locations: must contain at most")
+
+    def test_transition_wrong_field_types(self):
+        h = Finding.from_dict(base())
+        bad = Validation("human_review", 5, None, 7)
+        with self.assertRaises(ValidationError):
+            h.transition("rejected", bad)
+
+    def test_lone_surrogates(self):
+        for ch in ("\ud800", "\udfff"):
+            self.bad(self.mod(title="a" + ch), "title")
+            self.bad(self.mod(description=ch), "description")
+            d = base()
+            d["remediation"]["summary"] = ch
+            self.bad(d, "remediation.summary")
+            d = base()
+            d["evidence"][0]["snippet"] = ch
+            self.bad(d, "snippet")
+            d = base()
+            d["locations"][0]["path"] = ch
+            self.bad(d, "path")
+            d = base()
+            d["remediation"]["references"] = ["https://a.com/" + ch]
+            self.bad(d, "references[0]")
+            with self.assertRaises(ValidationError):
+                Finding.from_json(json.dumps(self.mod(title="a" + ch)))
+        # accepted findings always serialize to UTF-8
+        f = Finding.from_dict(self.mod(title="caf\u00e9 \U0001f600"))
+        f.to_json().encode("utf-8")
+
     def test_doc_examples(self):
         with open(DOC, encoding="utf-8") as fh:
             blocks = re.findall(r"```json\n(.*?)```", fh.read(), re.S)
