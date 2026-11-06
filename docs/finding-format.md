@@ -42,7 +42,7 @@ other than the one they implement.
 | `path` | required; repo-relative POSIX path: non-empty, not absolute, no empty segment (`a//b`, trailing `/`), no `.` or `..` segment, no backslash, at most 4096 chars, no control, line-separator or bidi characters (same set as single-line fields) |
 | `start_line` | required integer >= 1 (booleans rejected) |
 | `end_line` | optional integer >= `start_line`; defaults to `start_line` |
-| `start_column`, `end_column` | optional integers >= 1 |
+| `start_column`, `end_column` | optional integers >= 1; if `start_line` equals `end_line` and both columns are present, `end_column` must be >= `start_column` |
 
 ### Evidence
 
@@ -58,7 +58,7 @@ other than the one they implement.
 |---|---|
 | `summary` | required, 1-2000 chars |
 | `patch` | optional string, at most 20000 chars |
-| `references` | optional list of at most 20 `http://` or `https://` URLs (each at most 2048 chars, printable ASCII only `[\x21-\x7e]` so no whitespace, control, C1, line-separator, bidi or non-ASCII characters; non-empty host) |
+| `references` | optional list of at most 20 `http://` or `https://` URLs (each at most 2048 chars, printable ASCII only `[\x21-\x7e]` so no whitespace, control, C1, line-separator, bidi or non-ASCII characters; a real non-empty host, so `https://@`, `https://:80` and `https://@/x` are rejected) |
 
 ### Validation
 
@@ -81,7 +81,7 @@ other than the one they implement.
 
 ## Parsing and serialization
 
-Parsing is strict: unknown keys are rejected, there is no type coercion, and
+Parsing is strict: unknown keys are rejected (error: `<path>: unknown key <repr, truncated to 64 chars>`), there is no type coercion, and
 all errors are collected as `path: message` strings in
 `ValidationError.errors` (`ValidationError` subclasses `ValueError`). Invalid
 JSON, a non-object document, input larger than 1 MiB (1048576 bytes of UTF-8; for `str` input the encoded size is measured), a JSON object with duplicate keys (at any nesting level), or JSON
@@ -92,8 +92,8 @@ All patterns (`id`, `cwe`, timestamp, URL) are matched against the whole string
 
 Single-line fields (`title`, `category`, `validated_by`) reject every control
 character (U+0000-U+001F, U+007F-U+009F), the line/paragraph separators
-U+2028 and U+2029, and bidi controls (U+200E, U+200F, U+202A-U+202E,
-U+2066-U+2069). `Location.path` applies the same rejection.
+U+2028 and U+2029, and bidi controls (U+061C, U+200E, U+200F,
+U+202A-U+202E, U+2066-U+2069). `Location.path` applies the same rejection.
 
 All string fields reject lone surrogate code points (U+D800-U+DFFF), so any
 accepted finding serializes to valid UTF-8.

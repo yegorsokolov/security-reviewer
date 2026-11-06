@@ -64,15 +64,15 @@ class T(unittest.TestCase):
             self.bad(d, f"{k}: missing")
 
     def test_unknown_keys(self):
-        self.bad(self.mod(x=1), "x: unknown key")
+        self.bad(self.mod(x=1), "$: unknown key 'x'")
         d = base(); d["locations"][0]["z"] = 1
-        self.bad(d, "locations[0].z: unknown key")
+        self.bad(d, "locations[0]: unknown key 'z'")
         d = base(); d["evidence"][0]["z"] = 1
-        self.bad(d, "evidence[0].z")
+        self.bad(d, "evidence[0]: unknown key 'z'")
         d = base(); d["remediation"]["z"] = 1
-        self.bad(d, "remediation.z")
+        self.bad(d, "remediation: unknown key 'z'")
         d = validated(); d["validation"]["z"] = 1
-        self.bad(d, "validation.z")
+        self.bad(d, "validation: unknown key 'z'")
 
     def test_version(self):
         for v in ("2", 1, None, ""):
@@ -180,7 +180,7 @@ class T(unittest.TestCase):
             Finding.from_dict(d)
         self.assertGreaterEqual(len(c.exception.errors), 4)
         for e in c.exception.errors:
-            self.assertRegex(e, r"^[\w.\[\]]+: ")
+            self.assertRegex(e, r"^[\w.\[\]$]+: ")
 
     def test_transitions(self):
         h = Finding.from_dict(base())
@@ -317,13 +317,43 @@ class T(unittest.TestCase):
     def test_url_charset(self):
         for bad in ("https://a.com/\x9b", "https://a.com/\u202e", "https://a.com/\u2066",
                     "https://a.com/\u200e", "https://a.com/\u2028", "https://a.com/\x7f",
-                    "https://a.com/\u00e9", "https://a.com/a b", "https:///x"):
+                    "https://a.com/\u00e9", "https://a.com/a b", "https:///x",
+                    "https://@", "https://:80", "https://@/x", "http://u@:8/"):
             d = base()
             d["remediation"]["references"] = [bad]
             self.bad(d, "remediation.references[0]")
 
+    def test_url_host_ok(self):
+        d = base()
+        d["remediation"]["references"] = ["https://u@a.com:8080/x", "http://[::1]/"]
+        Finding.from_dict(d)
+
+    def test_unknown_key_repr_truncated(self):
+        d = base(); d["x" * 500] = 1
+        with self.assertRaises(ValidationError) as c:
+            Finding.from_dict(d)
+        self.assertLess(len(str(c.exception)), 120)
+        self.assertIn("'xxx", str(c.exception))
+        self.bad(self.mod(**{"a\nb": 1}), "unknown key 'a\\nb'")
+
+    def test_transition_bad_self_status(self):
+        h = Finding.from_dict(base())
+        object.__setattr__(h, "status", "bogus")
+        with self.assertRaises(ValidationError):
+            h.transition("validated")
+
+    def test_column_order(self):
+        def loc(sl, el, sc, ec):
+            d = base()
+            d["locations"][0].update(start_line=sl, end_line=el,
+                                     start_column=sc, end_column=ec)
+            return d
+        self.bad(loc(3, 3, 5, 4), "end_column")
+        Finding.from_dict(loc(3, 3, 5, 5))
+        Finding.from_dict(loc(3, 4, 5, 1))
+
     def test_bidi_and_c1_single_line(self):
-        for ch in ("\u202a", "\u202e", "\u2066", "\u2069", "\u200e", "\u200f", "\x9b"):
+        for ch in ("\u202a", "\u202e", "\u2066", "\u2069", "\u200e", "\u200f", "\u061c", "\x9b"):
             self.bad(self.mod(title="a" + ch + "b"), "title")
             self.bad(self.mod(category="a" + ch), "category")
             d = validated()

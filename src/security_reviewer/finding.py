@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
 SCHEMA_VERSION = "1"
 
@@ -18,9 +19,9 @@ _TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0
 # Printable ASCII only (no whitespace, control or bidi characters); non-empty host.
 _URL_RE = re.compile(r"https?://(?![/?#])[\x21-\x7e]+")
 # C0, DEL, C1 (includes NEL U+0085), LINE SEPARATOR, PARAGRAPH SEPARATOR,
-# bidi embedding/override/isolate controls and LRM/RLM.
+# bidi embedding/override/isolate controls, LRM/RLM and ALM (U+061C).
 _CTRL_RE = re.compile(
-    "[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f]")
+    "[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 MAX_JSON_BYTES = 1024 * 1024
@@ -113,7 +114,8 @@ def _obj(data, path, required, optional, errs):
     ok = True
     for k in data:
         if not isinstance(k, str) or k not in required and k not in optional:
-            errs.append(f"{path}.{k}: unknown key" if path != "$" else f"{k}: unknown key")
+            kr = repr(k) if len(repr(k)) <= 64 else repr(k)[:64] + "..."
+            errs.append(f"{path}: unknown key {kr}")
             ok = False
     for k in required:
         if k not in data:
@@ -187,6 +189,15 @@ def _list(data, path, key, errs):
     return data[key]
 
 
+def _url_ok(u):
+    if len(u) > MAX_URL_LEN or not _URL_RE.fullmatch(u):
+        return False
+    try:
+        return bool(urlsplit(u).hostname)
+    except ValueError:
+        return False
+
+
 def _valid_path(p):
     return (p != "" and not p.startswith("/") and "\\" not in p
             and not _CTRL_RE.search(p)
@@ -234,6 +245,10 @@ class Location:
         ec = _posint(data, path, "end_column", errs)
         if sl is not None and el is not None and el < sl:
             errs.append(f"{_p(path, 'end_line')}: must be >= start_line")
+        elif (sl is not None and el is not None and sl == el
+              and sc is not None and ec is not None and ec < sc):
+            errs.append(f"{_p(path, 'end_column')}: must be >= start_column "
+                        "when start_line equals end_line")
         if len(errs) != n:
             return None
         return cls(p, sl, el, sc, ec)
@@ -293,7 +308,7 @@ class Remediation:
             rp = f"{_p(path, 'references')}[{i}]"
             if not isinstance(r, str):
                 errs.append(f"{rp}: must be a string")
-            elif (len(r) > MAX_URL_LEN or not _URL_RE.fullmatch(r)):
+            elif not _url_ok(r):
                 errs.append(f"{rp}: must be an http(s) URL")
             else:
                 refs.append(r)
@@ -509,11 +524,11 @@ class Finding:
         except ValueError:
             raise ValidationError(
                 [f"status: unknown status {new_status!r}"]) from None
-        if new_status not in ALLOWED_TRANSITIONS[self.status]:
-            raise ValidationError(
-                [f"status: illegal transition {self.status.value} -> "
-                 f"{new_status.value}"])
         try:
+            if new_status not in ALLOWED_TRANSITIONS[self.status]:
+                raise ValidationError(
+                    [f"status: illegal transition {self.status.value} -> "
+                     f"{new_status.value}"])
             cand = replace(self, status=new_status,
                            validation=validation if validation is not None
                            else self.validation)
