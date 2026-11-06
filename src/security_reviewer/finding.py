@@ -10,10 +10,24 @@ from typing import Any
 
 SCHEMA_VERSION = "1"
 
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_CWE_RE = re.compile(r"^CWE-\d+$")
-_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
-_URL_RE = re.compile(r"^https?://[^\s/?#]+[^\s]*$")
+# All patterns are used with fullmatch (never match + "$", which lets a
+# trailing newline through) and are ASCII-only.
+_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_CWE_RE = re.compile(r"CWE-[0-9]+")
+_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z")
+_URL_RE = re.compile(r"https?://[^\s\x00-\x1f\x7f/?#]+[^\s\x00-\x1f\x7f]*")
+# C0, DEL, C1 (includes NEL U+0085), LINE SEPARATOR, PARAGRAPH SEPARATOR.
+_CTRL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_PATH_CTRL_RE = re.compile("[\x00-\x1f\x7f]")
+
+MAX_JSON_BYTES = 1024 * 1024
+MAX_EVIDENCE = 50
+MAX_REFERENCES = 20
+MAX_URL_LEN = 2048
+MAX_VALIDATED_BY = 200
+MAX_REMEDIATION_SUMMARY = 2000
+MAX_PATCH = 20000
+MAX_NOTES = 5000
 
 
 class Severity(str, Enum):
@@ -111,10 +125,10 @@ def _str(data, path, key, errs, *, maxlen=None, minlen=1, regex=None,
     if maxlen is not None and len(v) > maxlen:
         errs.append(f"{fp}: must be at most {maxlen} characters")
         return None
-    if nonl and ("\n" in v or "\r" in v):
-        errs.append(f"{fp}: must not contain newlines")
+    if nonl and _CTRL_RE.search(v):
+        errs.append(f"{fp}: must not contain control characters or newlines")
         return None
-    if regex is not None and not regex.match(v):
+    if regex is not None and not regex.fullmatch(v):
         errs.append(f"{fp}: invalid format")
         return None
     return v
@@ -157,8 +171,9 @@ def _list(data, path, key, errs):
 
 def _valid_path(p):
     return (p != "" and not p.startswith("/") and "\\" not in p
-            and "\x00" not in p and ".." not in p.split("/")
-            and not re.match(r"^[A-Za-z]:", p))
+            and not _PATH_CTRL_RE.search(p)
+            and all(seg not in ("", ".", "..") for seg in p.split("/"))
+            and not re.match(r"[A-Za-z]:", p))
 
 
 # ---------------------------------------------------------------- classes
@@ -193,7 +208,8 @@ class Location:
         p = _str(data, path, "path", errs)
         if p is not None and not _valid_path(p):
             errs.append(f"{_p(path, 'path')}: must be a repo-relative POSIX path "
-                        "(no absolute, '..', backslash or NUL)")
+                        "(no absolute, empty, '.' or '..' segment, backslash "
+                        "or control character)")
         sl = _posint(data, path, "start_line", errs)
         el = _posint(data, path, "end_line", errs)
         sc = _posint(data, path, "start_column", errs)
@@ -247,15 +263,19 @@ class Remediation:
         _obj(data, path, ("summary",), ("patch", "references"), errs)
         if not isinstance(data, dict):
             return None
-        s = _str(data, path, "summary", errs)
-        pt = _str(data, path, "patch", errs, minlen=0)
+        s = _str(data, path, "summary", errs, maxlen=MAX_REMEDIATION_SUMMARY)
+        pt = _str(data, path, "patch", errs, minlen=0, maxlen=MAX_PATCH)
         refs = []
         lst = _list(data, path, "references", errs)
+        if lst is not None and len(lst) > MAX_REFERENCES:
+            errs.append(f"{_p(path, 'references')}: must contain at most "
+                        f"{MAX_REFERENCES} items")
+            lst = None
         for i, r in enumerate(lst or []):
             rp = f"{_p(path, 'references')}[{i}]"
             if not isinstance(r, str):
                 errs.append(f"{rp}: must be a string")
-            elif not _URL_RE.match(r):
+            elif len(r) > MAX_URL_LEN or not _URL_RE.fullmatch(r):
                 errs.append(f"{rp}: must be an http(s) URL")
             else:
                 refs.append(r)
@@ -263,7 +283,7 @@ class Remediation:
 
 
 def _ts_ok(v):
-    if not _TS_RE.match(v):
+    if not _TS_RE.fullmatch(v):
         return False
     try:
         datetime.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")
@@ -294,12 +314,13 @@ class Validation:
         if not isinstance(data, dict):
             return None
         m = _enum(data, path, "method", ValidationMethod, errs)
-        by = _str(data, path, "validated_by", errs)
+        by = _str(data, path, "validated_by", errs, maxlen=MAX_VALIDATED_BY,
+                   nonl=True)
         at = _str(data, path, "validated_at", errs)
         if at is not None and not _ts_ok(at):
             errs.append(f"{_p(path, 'validated_at')}: must be an RFC3339 UTC "
                         "timestamp ending in Z")
-        notes = _str(data, path, "notes", errs, minlen=0)
+        notes = _str(data, path, "notes", errs, minlen=0, maxlen=MAX_NOTES)
         return cls(m, by, at, notes) if len(errs) == n else None
 
 
@@ -350,16 +371,24 @@ class Finding:
     @classmethod
     def from_dict(cls, data):
         errs: list = []
-        f = cls._parse(data, errs)
+        try:
+            f = cls._parse(data, errs)
+        except RecursionError:
+            raise ValidationError(["$: structure too deeply nested"]) from None
         if errs or f is None:
             raise ValidationError(errs)
         return f
 
     @classmethod
     def from_json(cls, text):
+        if isinstance(text, (str, bytes, bytearray)) and len(text) > MAX_JSON_BYTES:
+            raise ValidationError(
+                [f"$: input too large (max {MAX_JSON_BYTES} bytes)"])
         try:
             data = json.loads(text)
-        except (ValueError, TypeError) as e:
+        except RecursionError:
+            raise ValidationError(["$: JSON too deeply nested"]) from None
+        except Exception as e:
             raise ValidationError([f"$: invalid JSON: {e}"]) from None
         if not isinstance(data, dict):
             raise ValidationError(["$: must be a JSON object"])
@@ -378,7 +407,7 @@ class Finding:
             errs.append(f'schema_version: must be the string "{SCHEMA_VERSION}"')
         fid = _str(data, "$", "id", errs, regex=_ID_RE)
         title = _str(data, "$", "title", errs, maxlen=200, nonl=True)
-        cat = _str(data, "$", "category", errs, maxlen=100)
+        cat = _str(data, "$", "category", errs, maxlen=100, nonl=True)
         cwe = _str(data, "$", "cwe", errs, regex=_CWE_RE)
         desc = _str(data, "$", "description", errs, maxlen=5000, minlen=0)
         sev = _enum(data, "$", "severity", Severity, errs)
@@ -395,7 +424,11 @@ class Finding:
             if r:
                 locs.append(r)
         evs = []
-        for i, x in enumerate(_list(data, "$", "evidence", errs) or []):
+        elst = _list(data, "$", "evidence", errs)
+        if elst is not None and len(elst) > MAX_EVIDENCE:
+            errs.append(f"evidence: must contain at most {MAX_EVIDENCE} items")
+            elst = None
+        for i, x in enumerate(elst or []):
             r = Evidence._parse(x, f"evidence[{i}]", errs)
             if r:
                 evs.append(r)
@@ -407,21 +440,19 @@ class Finding:
         if data.get("validation") is not None:
             val = Validation._parse(data["validation"], "validation", errs)
             val_ok = val is not None
-        elif "validation" in data and data["validation"] is not None:
-            val_ok = False
 
         # cross-field rules (only when the involved fields parsed)
         if st is not None and val_ok:
             has_val = val is not None
             real_ev = any(e.kind != EvidenceKind.MODEL_REASONING for e in evs)
-            if st is Status.VALIDATED:
+            if st in (Status.VALIDATED, Status.FIXED):
                 if not has_val:
-                    errs.append("validation: required when status is validated")
+                    errs.append(f"validation: required when status is {st.value}")
                 if not real_ev:
-                    errs.append("evidence: validated requires at least one "
+                    errs.append(f"evidence: {st.value} requires at least one "
                                 "evidence not of kind model_reasoning")
             elif st is Status.REJECTED:
-                if not has_val or not val.notes:
+                if not has_val or not (val.notes or "").strip():
                     errs.append("validation.notes: rejected requires validation "
                                 "with notes")
             elif st is Status.HYPOTHESIS:
@@ -440,6 +471,9 @@ class Finding:
 
     # --- lifecycle
     def transition(self, new_status, validation=None):
+        if validation is not None and not isinstance(validation, Validation):
+            raise ValidationError(
+                ["validation: must be a Validation instance or None"])
         try:
             new_status = Status(new_status)
         except ValueError:

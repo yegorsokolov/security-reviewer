@@ -22,15 +22,15 @@ other than the one they implement.
 |---|---|---|
 | `schema_version` | string | required, must be exactly `"1"` |
 | `id` | string | required, `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
-| `title` | string | required, 1-200 chars, no newline |
-| `category` | string | required, short non-empty string (max 100) |
-| `cwe` | string | optional, `^CWE-\d+$` |
+| `title` | string | required, 1-200 chars, single line (no control characters, newlines or line separators) |
+| `category` | string | required, 1-100 chars, single line |
+| `cwe` | string | optional, `^CWE-[0-9]+$` (ASCII digits only) |
 | `severity` | enum | `critical`, `high`, `medium`, `low`, `info` |
 | `confidence` | enum | `high`, `medium`, `low` |
 | `status` | enum | `hypothesis`, `validated`, `rejected`, `fixed` |
 | `origin` | enum | `static_tool`, `ai`, `human` |
 | `locations` | array | required, at least one Location |
-| `evidence` | array | required (may be empty), list of Evidence |
+| `evidence` | array | required (may be empty), at most 50 Evidence items |
 | `remediation` | object | required, Remediation |
 | `validation` | object or null | Validation; may be omitted or null |
 | `description` | string | optional, at most 5000 chars |
@@ -39,7 +39,7 @@ other than the one they implement.
 
 | Field | Rules |
 |---|---|
-| `path` | required; repo-relative POSIX path: non-empty, not absolute, no `..` segment, no backslash, no NUL |
+| `path` | required; repo-relative POSIX path: non-empty, not absolute, no empty segment (`a//b`, trailing `/`), no `.` or `..` segment, no backslash, no control characters (U+0000-U+001F, U+007F) |
 | `start_line` | required integer >= 1 (booleans rejected) |
 | `end_line` | optional integer >= `start_line`; defaults to `start_line` |
 | `start_column`, `end_column` | optional integers >= 1 |
@@ -56,24 +56,26 @@ other than the one they implement.
 
 | Field | Rules |
 |---|---|
-| `summary` | required, non-empty |
-| `patch` | optional string |
-| `references` | optional list of `http://` or `https://` URLs |
+| `summary` | required, 1-2000 chars |
+| `patch` | optional string, at most 20000 chars |
+| `references` | optional list of at most 20 `http://` or `https://` URLs (each at most 2048 chars, no whitespace or control characters) |
 
 ### Validation
 
 | Field | Rules |
 |---|---|
 | `method` | `tool_confirmed`, `exploit_reproduced`, `human_review` |
-| `validated_by` | required, non-empty |
-| `validated_at` | RFC3339 UTC timestamp ending in `Z`, e.g. `2026-01-02T03:04:05Z` |
-| `notes` | optional string |
+| `validated_by` | required, 1-200 chars, single line |
+| `validated_at` | RFC3339 UTC timestamp ending in `Z`, e.g. `2026-01-02T03:04:05Z` (ASCII digits only) |
+| `notes` | optional string, at most 5000 chars |
 
 ## Cross-field rules
 
-- `validated`: needs a `validation` and at least one evidence item whose kind
-  is not `model_reasoning`.
-- `rejected`: needs a `validation` with `notes`.
+- `validated` and `fixed`: need a `validation` and at least one evidence item
+  whose kind is not `model_reasoning`. (`fixed` has the same requirements as
+  `validated`.)
+- `rejected`: needs a `validation` with `notes` that are non-blank after
+  stripping whitespace.
 - `hypothesis`: `validation` must be null/absent and `confidence` must not be
   `high`; a `critical` hypothesis needs at least one evidence item.
 
@@ -82,7 +84,15 @@ other than the one they implement.
 Parsing is strict: unknown keys are rejected, there is no type coercion, and
 all errors are collected as `path: message` strings in
 `ValidationError.errors` (`ValidationError` subclasses `ValueError`). Invalid
-JSON or a non-object document also raises `ValidationError`.
+JSON, a non-object document, input larger than 1 MiB (1048576 bytes), or JSON
+nested too deeply to parse also raises `ValidationError`.
+
+All patterns (`id`, `cwe`, timestamp, URL) are matched against the whole string
+(a trailing newline is rejected) and accept ASCII digits only.
+
+Single-line fields (`title`, `category`, `validated_by`) reject every control
+character (U+0000-U+001F, U+007F-U+009F) and the line/paragraph separators
+U+2028 and U+2029.
 
 Serialization (`to_json`) is deterministic: sorted keys, 2-space indent, `None`
 values omitted, enums written as lowercase strings, trailing newline.
@@ -101,7 +111,8 @@ stateDiagram-v2
 ```
 
 `Finding.transition(new_status, validation=None)` returns a new instance,
-re-validates all rules, and rejects illegal moves.
+re-validates all rules, and rejects illegal moves. `validation` must be a
+`Validation` instance or `None`, otherwise `ValidationError` is raised.
 
 ## Examples
 

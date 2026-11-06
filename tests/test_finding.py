@@ -230,6 +230,90 @@ class T(unittest.TestCase):
         with self.assertRaises(Exception):
             f.title = "x"
 
+    def test_trailing_newline_and_unicode_digits(self):
+        self.bad(self.mod(id="F-1\n"), "id")
+        self.bad(self.mod(cwe="CWE-79\n"), "cwe")
+        self.bad(self.mod(cwe="CWE-\u0667"), "cwe")
+        for ts in ("2026-01-02T03:04:05Z\n", "\u0662026-01-02T03:04:05Z"):
+            d = validated(); d["validation"]["validated_at"] = ts
+            self.bad(d, "validated_at")
+        d = base(); d["remediation"]["references"] = ["https://a.example/x\n"]
+        self.bad(d, "references[0]")
+
+    def test_json_robustness(self):
+        with self.assertRaises(ValidationError):
+            Finding.from_json("[" * 100000)
+        with self.assertRaises(ValidationError):
+            Finding.from_json('{"a":' * 100000)
+        with self.assertRaises(ValidationError):
+            Finding.from_json(" " * (1024 * 1024 + 1))
+        with self.assertRaises(ValidationError):
+            Finding.from_json(None)
+        d = base(); d["title"] = [[]] * 3
+        self.bad(d, "title")
+        deep = []
+        for _ in range(100000):
+            deep = [deep]
+        d = base(); d["title"] = deep
+        with self.assertRaises(ValidationError):
+            Finding.from_dict(d)
+
+    def test_fixed_requires_validation(self):
+        d = self.mod(status="fixed")
+        self.bad(d, "validation: required when status is fixed")
+        self.bad(d, "evidence: fixed requires")
+        d = validated(); d["status"] = "fixed"
+        Finding.from_dict(d)
+        d["evidence"] = [{"kind": "model_reasoning", "summary": "s"}]
+        self.bad(d, "evidence: fixed requires")
+        del d["validation"]
+        self.bad(d, "validation: required")
+
+    def test_path_hardening(self):
+        for p in ("a\x01b", "a\x7fb", "a\nb", "a//b", "a/b/", ".", "a/./b",
+                  "./a", "a/../b", "/a", "C:x", "a\\b"):
+            d = base(); d["locations"][0]["path"] = p
+            self.bad(d, "locations[0].path")
+        d = base(); d["locations"][0]["path"] = ".github/x.yml"
+        Finding.from_dict(d)
+
+    def test_single_line_and_limits(self):
+        for ch in ("\n", "\r", "\x00", "\x1f", "\x7f", "\x85", "\u2028", "\u2029"):
+            self.bad(self.mod(title="a" + ch + "b"), "title")
+            self.bad(self.mod(category="a" + ch + "b"), "category")
+            d = validated(); d["validation"]["validated_by"] = "a" + ch
+            self.bad(d, "validated_by")
+        d = validated(); d["validation"]["validated_by"] = "x" * 201
+        self.bad(d, "validated_by")
+        d = validated(); d["validation"]["notes"] = "x" * 5001
+        self.bad(d, "validation.notes")
+        d = base(); d["remediation"]["summary"] = "x" * 2001
+        self.bad(d, "remediation.summary")
+        d = base(); d["remediation"]["patch"] = "x" * 20001
+        self.bad(d, "remediation.patch")
+        d = base(); d["remediation"]["references"] = ["https://a.example"] * 21
+        self.bad(d, "remediation.references")
+        d = base(); d["evidence"] = [{"kind": "tool_output", "summary": "s"}] * 51
+        self.bad(d, "evidence")
+        d = base(); d["evidence"] = [{"kind": "tool_output", "summary": "s"}] * 50
+        d["remediation"]["references"] = ["https://a.example"] * 20
+        Finding.from_dict(d)
+
+    def test_rejected_blank_notes(self):
+        for n in ("", "   ", "\t\n "):
+            d = self.mod(status="rejected")
+            d["validation"] = validated()["validation"]
+            d["validation"]["notes"] = n
+            self.bad(d, "validation.notes")
+        with self.assertRaises(ValidationError):
+            Finding.from_dict(base()).transition("rejected", VAL("  "))
+
+    def test_transition_bad_validation_arg(self):
+        h = Finding.from_dict(base())
+        for bad in ({"method": "human_review"}, "x", 5, object()):
+            with self.assertRaises(ValidationError):
+                h.transition("rejected", bad)
+
     def test_doc_examples(self):
         with open(DOC, encoding="utf-8") as fh:
             blocks = re.findall(r"```json\n(.*?)```", fh.read(), re.S)
