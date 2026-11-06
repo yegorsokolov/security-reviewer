@@ -193,7 +193,9 @@ def _url_ok(u):
     if len(u) > MAX_URL_LEN or not _URL_RE.fullmatch(u):
         return False
     try:
-        return bool(urlsplit(u).hostname)
+        parts = urlsplit(u)
+        parts.port  # raises ValueError on non-numeric or out-of-range port
+        return bool(parts.hostname)
     except ValueError:
         return False
 
@@ -243,9 +245,10 @@ class Location:
         el = _posint(data, path, "end_line", errs)
         sc = _posint(data, path, "start_column", errs)
         ec = _posint(data, path, "end_column", errs)
-        if sl is not None and el is not None and el < sl:
+        eff = el if el is not None else sl
+        if sl is not None and eff is not None and eff < sl:
             errs.append(f"{_p(path, 'end_line')}: must be >= start_line")
-        elif (sl is not None and el is not None and sl == el
+        elif (sl is not None and eff is not None and sl == eff
               and sc is not None and ec is not None and ec < sc):
             errs.append(f"{_p(path, 'end_column')}: must be >= start_column "
                         "when start_line equals end_line")

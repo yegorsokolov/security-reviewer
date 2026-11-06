@@ -42,7 +42,7 @@ other than the one they implement.
 | `path` | required; repo-relative POSIX path: non-empty, not absolute, no empty segment (`a//b`, trailing `/`), no `.` or `..` segment, no backslash, at most 4096 chars, no control, line-separator or bidi characters (same set as single-line fields) |
 | `start_line` | required integer >= 1 (booleans rejected) |
 | `end_line` | optional integer >= `start_line`; defaults to `start_line` |
-| `start_column`, `end_column` | optional integers >= 1; if `start_line` equals `end_line` and both columns are present, `end_column` must be >= `start_column` |
+| `start_column`, `end_column` | optional integers >= 1; if `start_line` equals the effective `end_line` (`end_line`, or `start_line` when omitted) and both columns are present, `end_column` must be >= `start_column` |
 
 ### Evidence
 
@@ -82,7 +82,7 @@ other than the one they implement.
 ## Parsing and serialization
 
 Parsing is strict: unknown keys are rejected (error: `<path>: unknown key <repr, truncated to 64 chars>`), there is no type coercion, and
-all errors are collected as `path: message` strings in
+all errors are collected as `path: message` strings (`$` denotes the root path, i.e. the document itself; top-level fields are reported by bare name, e.g. `title`) in
 `ValidationError.errors` (`ValidationError` subclasses `ValueError`). Invalid
 JSON, a non-object document, input larger than 1 MiB (1048576 bytes of UTF-8; for `str` input the encoded size is measured), a JSON object with duplicate keys (at any nesting level), or JSON
 nested too deeply to parse also raises `ValidationError`.

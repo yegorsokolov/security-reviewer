@@ -182,6 +182,16 @@ class T(unittest.TestCase):
         for e in c.exception.errors:
             self.assertRegex(e, r"^[\w.\[\]$]+: ")
 
+    def test_end_line_omitted_columns(self):
+        d = base(); d["locations"][0] = {"path": "a.py", "start_line": 3,
+                                         "start_column": 5, "end_column": 4}
+        self.bad(d, "end_column: must be >= start_column")
+        d["locations"][0]["end_column"] = 5
+        f = Finding.from_dict(d)
+        self.assertEqual(Finding.from_dict(f.to_dict()), f)
+        self.assertEqual(f.locations[0].end_line, 3)
+        self.assertEqual(f.transition("rejected", VAL("fp")).status, Status.REJECTED)
+
     def test_transitions(self):
         h = Finding.from_dict(base())
         self.assertEqual(ALLOWED_TRANSITIONS[Status.HYPOTHESIS],
@@ -318,7 +328,8 @@ class T(unittest.TestCase):
         for bad in ("https://a.com/\x9b", "https://a.com/\u202e", "https://a.com/\u2066",
                     "https://a.com/\u200e", "https://a.com/\u2028", "https://a.com/\x7f",
                     "https://a.com/\u00e9", "https://a.com/a b", "https:///x",
-                    "https://@", "https://:80", "https://@/x", "http://u@:8/"):
+                    "https://@", "https://:80", "https://@/x", "http://u@:8/",
+                    "https://a.com:abc/", "https://a.com:99999/", "https://a.com:65536/"):
             d = base()
             d["remediation"]["references"] = [bad]
             self.bad(d, "remediation.references[0]")
