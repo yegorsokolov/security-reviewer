@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from .finding import (
     MAX_PATH, Confidence, Evidence, EvidenceKind, Finding, Location, Origin,
     Remediation, Severity, Status, Validation, ValidationError,
-    ValidationMethod, _CTRL_RE, _SURROGATE_RE,
+    ValidationMethod, _CTRL_RE, _SURROGATE_RE, _valid_path,
 )
 
 CATEGORY = "hardcoded-secret"
@@ -31,20 +31,26 @@ DEFAULT_SKIP_DIRS = frozenset({
     ".mypy_cache", "site-packages",
 })
 
-_PLACEHOLDER_WORDS = (
-    "changeme", "change_me", "example", "placeholder", "your", "dummy",
-    "sample", "xxxx", "redacted", "todo", "fixme", "insert", "replace",
-    "password", "secret", "notasecret", "foobar", "*****",
-)
+_PLACEHOLDER_TOKENS = frozenset({
+    "change", "changeme", "me", "it", "changeit", "example", "placeholder",
+    "your", "yours", "my", "the", "a", "api", "key", "token", "secret",
+    "password", "passwd", "pass", "here", "dummy", "sample", "redacted",
+    "todo", "fixme", "insert", "replace", "value", "test", "testing", "foo",
+    "bar", "foobar", "string", "null", "none", "undefined", "notasecret",
+    "xxx", "xxxx", "default", "demo", "fake", "mock", "secretkey",
+})
+_PLACEHOLDER_SHAPES = re.compile(
+    r"<[^<>]*>|\$\{[^{}]*\}|\{\{[^{}]*\}\}|%[^%]+%|\$[a-z_][a-z0-9_]*"
+    r"|[x*#._-]+|\.\.\.")
 
 
 def _is_placeholder(value: str) -> bool:
+    """Whole-value test only; substrings never make a value a placeholder."""
     v = value.lower()
-    if v[0] in "<{$%[" or v.startswith(("${", "{{", "<%")):
+    if _PLACEHOLDER_SHAPES.fullmatch(v) or len(set(v)) == 1:
         return True
-    if len(set(v)) <= 2:
-        return True
-    return any(w in v for w in _PLACEHOLDER_WORDS)
+    tokens = [t for t in re.split(r"[_.\-]+", v) if t]
+    return bool(tokens) and all(t in _PLACEHOLDER_TOKENS for t in tokens)
 
 
 @dataclass(frozen=True)
@@ -57,10 +63,11 @@ class Rule:
     group: int = 0
     reject_placeholders: bool = False
 
-    def matches(self, line: str):
+    def matches(self, line: str, include_placeholders: bool = False):
         """Yield (start, end) spans (0-based, end exclusive) of the secret."""
         for m in self.regex.finditer(line):
-            if self.reject_placeholders and _is_placeholder(m.group(self.group)):
+            if (self.reject_placeholders and not include_placeholders
+                    and _is_placeholder(m.group(self.group))):
                 continue
             yield m.start(self.group), m.end(self.group)
 
@@ -81,8 +88,9 @@ RULES = (
              r"(?<![A-Za-z0-9])xox[abprs]-[0-9A-Za-z-]{10,200}")),
     Rule("generic-credential", "Hardcoded credential assignment",
          Severity.MEDIUM, Confidence.LOW, re.compile(
-             r"(?i)(?:password|passwd|secret|api[_-]?key|access[_-]?token)"
-             r"[\"']?\s*[:=]\s*[\"']([^\"'\s]{8,200})[\"']"),
+             r"(?i)(?:password|passwd|pwd|secret(?:[_-]?access)?(?:[_-]?key)?"
+             r"|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)"
+             r"[\"']?\s{0,20}[:=]\s{0,20}[\"']([^\"'\s]{8,200})[\"']"),
          group=1, reject_placeholders=True),
 )
 _RULES_BY_ID = {r.id: r for r in RULES}
@@ -110,23 +118,17 @@ def _finding_id(rule: Rule, path: str, line_no: int, col: int) -> str:
     return f"secret.{rule.id}.{h}"
 
 
+_LONG_RUN = re.compile(r"[A-Za-z0-9+/=_-]{12,}")
+
+
 def _redacted_snippet(line: str, truncated: bool, limit: int) -> str:
-    # Every real match of any rule on the line is redacted (placeholder values
-    # are not secrets and stay visible). Redact first, trim afterwards.
-    spans = sorted(s for r in RULES for s in r.matches(line))
-    out, pos = [], 0
-    for s, e in spans:
-        if e <= pos:
-            continue
-        out.append(line[pos:max(s, pos)])
-        out.append(REDACTED)
-        pos = e
-    out.append(line[pos:])
-    text = "".join(out)
-    if truncated:  # a secret may straddle the cut; drop the tail
-        text = text[:max(0, len(text) - 64)]
-    text = _CTRL_RE.sub(" ", _SURROGATE_RE.sub("?", text)).strip()
-    return text[:limit]
+    """Text before the first secret-like match, then [REDACTED]. Nothing after
+    a match is ever kept, and long token-like runs in the prefix are masked."""
+    starts = [s for r in RULES for s, _ in r.matches(line, True)]
+    prefix = line[:min(starts)] if starts else ""
+    prefix = _LONG_RUN.sub(REDACTED, prefix)
+    prefix = _CTRL_RE.sub(" ", _SURROGATE_RE.sub("?", prefix))
+    return (prefix[-limit:].lstrip() + REDACTED)[:limit + len(REDACTED)]
 
 
 def _to_text(data: bytes) -> str:
@@ -149,14 +151,59 @@ def _build_finding(rule, path, line_no, start, end, line, truncated, limit):
             Evidence(EvidenceKind.TOOL_OUTPUT,
                      f"Rule {rule.id} matched at line {line_no}; "
                      "secret value redacted."),
+        ) + (() if rule.id == "private-key" else (
             Evidence(EvidenceKind.CODE_SNIPPET,
-                     "Matching line with secret value redacted.", snippet),
-        ),
+                     "Text before the match; the rest is redacted.", snippet),
+        )),
         remediation=REMEDIATION,
         cwe=CWE,
         description=("A value that looks like a hardcoded secret was found. "
                      "The value is intentionally not included in this finding."),
     )
+
+
+def _secret_in(path: str) -> bool:
+    """True if any secret rule matches the path (names must not leak secrets)."""
+    return any(any(True for _ in r.matches(path, True)) for r in RULES)
+
+
+def _read_regular(name, dfd, max_size, stats, rel=None):
+    """Read a regular file relative to dir fd ``dfd`` without following links."""
+    try:
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            stats.skip("skipped_symlink", rel)
+            return None
+        if not stat.S_ISREG(st.st_mode):  # never open devices/FIFOs/sockets
+            stats.skip("skipped_special", rel)
+            return None
+        flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                 | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(name, flags, dir_fd=dfd)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                stats.skip("skipped_special", rel)
+                return None
+            if st.st_size > max_size:
+                stats.skip("skipped_oversize", rel)
+                return None
+            chunks, total = [], 0
+            while total <= max_size:
+                c = os.read(fd, min(65536, max_size + 1 - total))
+                if not c:
+                    break
+                chunks.append(c)
+                total += len(c)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        stats.skip("skipped_unreadable", rel)
+        return None
+    if total > max_size:
+        stats.skip("skipped_oversize", rel)
+        return None
+    return b"".join(chunks)
 
 
 @dataclass
@@ -170,10 +217,26 @@ class ScanStats:
     skipped_unreadable: int = 0
     skipped_bad_path: int = 0
     skipped_special: int = 0
+    skipped_secret_in_path: int = 0
+    entries_visited: int = 0
+    hit_entry_cap: bool = False
+    #: bounded sample of (reason, ascii-escaped path or None) for skips; the
+    #: path is None when it looks like it contains a secret.
+    skip_samples: list = field(default_factory=list)
     truncated_lines: int = 0
     hit_file_cap: bool = False
     hit_byte_cap: bool = False
     hit_finding_cap: bool = False
+
+    MAX_SAMPLES = 50
+
+    def skip(self, counter: str, path: str | None = None):
+        setattr(self, counter, getattr(self, counter) + 1)
+        if len(self.skip_samples) < self.MAX_SAMPLES:
+            safe = None
+            if path is not None and not _secret_in(path):
+                safe = ascii(path)[:200]
+            self.skip_samples.append((counter.removeprefix("skipped_"), safe))
 
 
 class SecretScanner:
@@ -184,12 +247,14 @@ class SecretScanner:
                  max_total_bytes: int = 64 * 1024 * 1024,
                  max_findings: int = 1_000,
                  max_line_length: int = 2_000,
+                 max_entries: int = 200_000,
                  skip_dirs=DEFAULT_SKIP_DIRS):
         for name, v in (("max_file_size", max_file_size),
                         ("max_files", max_files),
                         ("max_total_bytes", max_total_bytes),
                         ("max_findings", max_findings),
-                        ("max_line_length", max_line_length)):
+                        ("max_line_length", max_line_length),
+                        ("max_entries", max_entries)):
             if not isinstance(v, int) or isinstance(v, bool) or v < 1:
                 raise ValueError(f"{name} must be a positive integer")
         self.max_file_size = max_file_size
@@ -197,57 +262,53 @@ class SecretScanner:
         self.max_total_bytes = max_total_bytes
         self.max_findings = max_findings
         self.max_line_length = max_line_length
+        self.max_entries = max_entries
         self.skip_dirs = frozenset(skip_dirs)
         self.stats = ScanStats()
 
     # -- file system helpers
-    def _walk(self, root: str, stats: ScanStats) -> Iterator[tuple[str, str]]:
-        """Yield (absolute path, repo-relative POSIX path), sorted, no symlinks."""
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    def _walk(self, root: str, stats: ScanStats):
+        """Yield (dir_fd, name, rel) sorted; symlinks and specials skipped.
+
+        Uses fwalk(follow_symlinks=False) so entries are handled relative to
+        open directory descriptors.
+        """
+        for dirpath, dirnames, filenames, dfd in os.fwalk(
+                root, follow_symlinks=False):
+            rel_dir = os.path.relpath(dirpath, root)
+            rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/") + "/"
             keep = []
             for d in sorted(dirnames):
+                if stats.entries_visited >= self.max_entries:
+                    stats.hit_entry_cap = True
+                    dirnames[:] = []
+                    return
+                stats.entries_visited += 1
                 if d in self.skip_dirs:
                     continue
-                if os.path.islink(os.path.join(dirpath, d)):
-                    stats.skipped_symlink += 1
+                try:
+                    is_link = stat.S_ISLNK(os.stat(
+                        d, dir_fd=dfd, follow_symlinks=False).st_mode)
+                except (OSError, ValueError):
+                    stats.skip("skipped_unreadable")
                     continue
-                keep.append(d)
+                if is_link:
+                    stats.skip("skipped_symlink", rel_dir + d)
+                elif _secret_in(d):
+                    stats.skip("skipped_secret_in_path")
+                else:
+                    keep.append(d)
             dirnames[:] = keep
             for fn in sorted(filenames):
-                full = os.path.join(dirpath, fn)
-                if os.path.islink(full):
-                    stats.skipped_symlink += 1
-                    continue
-                rel = os.path.relpath(full, root).replace(os.sep, "/")
-                yield full, rel
+                if stats.entries_visited >= self.max_entries:
+                    stats.hit_entry_cap = True
+                    return
+                stats.entries_visited += 1
+                yield dfd, fn, rel_dir + fn
 
-    def _read(self, full: str, stats: ScanStats) -> bytes | None:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) \
-            | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-        try:
-            fd = os.open(full, flags)
-        except OSError:
-            stats.skipped_unreadable += 1
-            return None
-        try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode):
-                stats.skipped_special += 1
-                return None
-            if st.st_size > self.max_file_size:
-                stats.skipped_oversize += 1
-                return None
-            with os.fdopen(fd, "rb", closefd=False) as fh:
-                data = fh.read(self.max_file_size + 1)
-        except OSError:
-            stats.skipped_unreadable += 1
-            return None
-        finally:
-            os.close(fd)
-        if len(data) > self.max_file_size:
-            stats.skipped_oversize += 1
-            return None
-        return data
+    def _read(self, name: str, dfd: int, stats: ScanStats,
+              rel: str | None = None) -> bytes | None:
+        return _read_regular(name, dfd, self.max_file_size, stats, rel)
 
     def _snippet_limit(self) -> int:
         return min(200, max(20, self.max_line_length // 2))
@@ -274,17 +335,21 @@ class SecretScanner:
         if not os.path.isdir(root):
             raise ValueError("root must be an existing directory")
         self.stats = stats = ScanStats()
-        for full, rel in self._walk(root, stats):
+        for dfd, name, rel in self._walk(root, stats):
             if stats.findings >= self.max_findings:
                 stats.hit_finding_cap = True
                 return
             if stats.files_scanned >= self.max_files:
                 stats.hit_file_cap = True
                 return
-            if len(rel) > MAX_PATH:
-                stats.skipped_bad_path += 1
+            if len(rel) > MAX_PATH or not _valid_path(rel) \
+                    or _SURROGATE_RE.search(rel):
+                stats.skip("skipped_bad_path", rel)
                 continue
-            data = self._read(full, stats)
+            if _secret_in(rel):
+                stats.skip("skipped_secret_in_path")
+                continue
+            data = self._read(name, dfd, stats, rel)
             if data is None:
                 continue
             if stats.bytes_read + len(data) > self.max_total_bytes:
@@ -293,13 +358,13 @@ class SecretScanner:
             stats.files_scanned += 1
             stats.bytes_read += len(data)
             if b"\x00" in data:
-                stats.skipped_binary += 1
+                stats.skip("skipped_binary", rel)
                 continue
             for f in self.scan_text(rel, _to_text(data), stats):
                 try:  # path may be invalid for the format (odd characters)
                     Finding.from_dict(f.to_dict())
                 except ValidationError:
-                    stats.skipped_bad_path += 1
+                    stats.skip("skipped_bad_path", rel)
                     break
                 stats.findings += 1
                 yield f
@@ -309,23 +374,34 @@ class SecretScanner:
 
 
 class LocalContextReader:
-    """ContextReader over a directory root; same safety rules as the scanner."""
+    """ContextReader over a directory root. Each directory component is opened
+    with O_NOFOLLOW|O_DIRECTORY relative to its parent descriptor, and the file
+    with O_NOFOLLOW, so symlinks are refused at every step."""
 
     def __init__(self, root, *, max_file_size: int = 1024 * 1024):
-        self.root = os.path.realpath(os.fspath(root))
-        self._scanner = SecretScanner(max_file_size=max_file_size)
+        self.root = os.fspath(root)
+        self.max_file_size = max_file_size
 
     def __call__(self, path: str) -> str | None:
-        parts = path.split("/")
-        if not path or path.startswith("/") or any(
-                p in ("", ".", "..") for p in parts) or "\\" in path:
+        if (not isinstance(path, str) or len(path) > MAX_PATH
+                or _SURROGATE_RE.search(path) or not _valid_path(path)):
             return None
-        cur = self.root
-        for p in parts[:-1]:  # refuse any symlinked directory component
-            cur = os.path.join(cur, p)
-            if os.path.islink(cur):
-                return None
-        data = self._scanner._read(os.path.join(cur, parts[-1]), ScanStats())
+        parts = path.split("/")
+        fds = []
+        try:
+            cur = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY
+                          | getattr(os, "O_CLOEXEC", 0))
+            fds.append(cur)
+            for p in parts[:-1]:
+                cur = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                              | getattr(os, "O_CLOEXEC", 0), dir_fd=cur)
+                fds.append(cur)
+            data = _read_regular(parts[-1], cur, self.max_file_size, ScanStats())
+        except (OSError, ValueError):
+            return None
+        finally:
+            for fd in fds:
+                os.close(fd)
         if data is None or b"\x00" in data:
             return None
         return _to_text(data)

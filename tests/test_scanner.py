@@ -70,7 +70,8 @@ class ScannerTest(unittest.TestCase):
                 if secret:
                     self.assertNotIn(secret, text)
                     self.assertNotIn(secret[:12], text)
-                self.assertIn("[REDACTED]", text)
+                if name != "private-key":
+                    self.assertIn("[REDACTED]", text)
                 self.assertEqual(Finding.from_json(text), f)
                 os.remove(os.path.join(self.root, "src", "a.txt"))
 
@@ -83,12 +84,88 @@ class ScannerTest(unittest.TestCase):
             self.assertNotIn(SLACK, f.to_json())
 
     def test_placeholders_ignored(self):
-        lines = ['password = "changeme123"', 'api_key = "your-api-key-here"',
+        lines = ['password = "changeme"', 'api_key = "your-api-key-here"',
                  'secret: "<your-secret-value>"', 'token = "example_token_value"',
                  'password = "${DB_PASSWORD}"', 'api_key = "xxxxxxxxxxxx"',
                  'secret = "short"']
         write(self.root, "a.py", "\n".join(lines) + "\n")
         self.assertEqual(self.scan(), [])
+
+    def test_real_values_with_placeholder_substrings_detected(self):
+        vals = ["Zx9!realSecretValue42", "P@ssword2024!", "myExampleTodoKey77",
+                "yourCompanyProd#9921"]
+        write(self.root, "a.py", "".join(
+            f'password = "{v}"\n' for v in vals))
+        fs = self.scan()
+        self.assertEqual(len(fs), len(vals))
+        for f in fs:
+            for v in vals:
+                self.assertNotIn(v, f.to_json())
+
+    def test_more_generic_keywords(self):
+        write(self.root, "a.py",
+              'client_secret = "' + PW + '"\n'
+              "aws_secret_access_key: '" + PW + "'\n"
+              'auth_token="' + PW + '"\n'
+              'SECRET_KEY = "' + PW + '"\n')
+        fs = self.scan()
+        self.assertEqual(len(fs), 4)
+        self.assertTrue(all(PW not in f.to_json() for f in fs))
+
+    def test_one_line_pem_in_json_no_leak(self):
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" + "KcwggSjAgEAAoIBAQC7"
+        write(self.root, "k.json",
+              '{"key": "' + PEM + "\\n" + body + '\\n-----END", "x": 1}\n')
+        fs = self.scan()
+        self.assertEqual(len(fs), 1)
+        self.assertNotIn(body[:16], fs[0].to_json())
+        self.assertNotIn(body[-16:], fs[0].to_json())
+
+    def test_csv_secret_after_key_no_leak(self):
+        sk = "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        write(self.root, "c.csv", "id,key,secret\n" + AWS + "," + sk + "\n")
+        fs = self.scan()
+        self.assertEqual(len(fs), 1)
+        text = fs[0].to_json()
+        self.assertNotIn("wJalr", text)
+        self.assertNotIn("EXAMPLEKEY", text)
+        self.assertNotIn(AWS, text)
+
+    def test_long_run_before_match_masked(self):
+        pre = "ZmFrZXRva2VuYmFzZTY0dmFsdWU"
+        write(self.root, "a.txt", pre + " " + AWS + "\n")
+        (f,) = self.scan()
+        self.assertNotIn(pre, f.to_json())
+
+    def test_secret_in_path_skipped(self):
+        write(self.root, AWS + ".txt", AWS + "\n")
+        write(self.root, GHP + "/f.txt", AWS + "\n")
+        write(self.root, "ok.txt", AWS + "\n")
+        sc = SecretScanner()
+        fs = list(sc.scan(self.root))
+        self.assertEqual([f.locations[0].path for f in fs], ["ok.txt"])
+        self.assertEqual(sc.stats.skipped_secret_in_path, 2)
+        for f in fs:
+            self.assertNotIn(GHP, f.to_json())
+        for _, path in sc.stats.skip_samples:
+            self.assertTrue(path is None or AWS not in path)
+
+    def test_entry_cap(self):
+        for i in range(10):
+            write(self.root, f"d{i}/f.txt", "x\n")
+        sc = SecretScanner(max_entries=5)
+        list(sc.scan(self.root))
+        self.assertTrue(sc.stats.hit_entry_cap)
+        self.assertEqual(sc.stats.entries_visited, 5)
+
+    def test_skip_samples_bounded_and_visible(self):
+        for i in range(60):
+            write(self.root, f"bad{i}\\x.txt", "x\n")
+        sc = SecretScanner()
+        list(sc.scan(self.root))
+        self.assertEqual(sc.stats.skipped_bad_path, 60)
+        self.assertEqual(len(sc.stats.skip_samples), 50)
+        self.assertEqual(sc.stats.skip_samples[0][0], "bad_path")
 
     def test_symlinks_not_followed(self):
         write(self.outside, "s.txt", AWS)
@@ -151,7 +228,7 @@ class ScannerTest(unittest.TestCase):
 
     def test_weird_filename_skipped(self):
         write(self.root, "ok.txt", AWS + "\n")
-        for name in ("bad\nname.txt", "back\\slash.txt", "bidi‮name.txt"):
+        for name in ("bad\nname.txt", "back\\slash.txt", "bidi\u202ename.txt"):
             try:
                 write(self.root, name, AWS + "\n")
             except OSError:
@@ -233,6 +310,9 @@ class ValidatorTest(unittest.TestCase):
         self.assertIsNone(reader("ld/x"))
         os.symlink("a.txt", os.path.join(self.root, "l.txt"))
         self.assertIsNone(reader("l.txt"))
+        self.assertIsNone(reader("a\x00.txt"))
+        self.assertIsNone(reader("a\\b"))
+        self.assertIsNone(reader("x" * 5000))
 
 
 if __name__ == "__main__":
