@@ -40,12 +40,12 @@ line and column, never the secret value.
 
 Redaction is conservative. The code snippet keeps only the text *before* the
 first match on the line, followed by `[REDACTED]`; nothing after a match is
-kept, and any run of 12 or more characters from `[A-Za-z0-9+/=_-]` in that
-prefix is also masked. The `private-key` rule emits no snippet at all. File
+kept, and any run of 12 or more non-space characters in that prefix is
+also masked. The `private-key` rule emits no snippet at all. File
 and directory names that match a secret rule are never reported (see below),
 so the secret value should appear in no finding field. This is best-effort
 pattern redaction: a secret in a format no rule recognises and shorter than
-12 characters in the prefix can still be shown.
+12 characters, placed before the first match, can still be shown.
 
 | Rule id | Detects | Severity | Confidence |
 | --- | --- | --- | --- |
@@ -76,6 +76,19 @@ and decoded with `errors="replace"`.
 - Files or directories whose name matches a secret rule are skipped
   (`skipped_secret_in_path`) so the secret is not leaked via `Location.path`.
 - Unreadable files are skipped.
+- Directory depth is capped by `max_depth` (default 64). The walker is
+  iterative and holds at most `max_depth + 1` open directory descriptors, so a
+  deeply nested tree cannot exhaust descriptors or the recursion limit.
+  Directories deeper than the cap are not scanned: they are counted in
+  `skipped_too_deep`, `hit_depth_cap` is set and a skip sample is recorded.
+- Secret-in-name detection uses separate, unanchored patterns applied to every
+  path component, so tokens glued to other characters (`backup_ghp_<token>.txt`)
+  are still caught.
+- **Skipped files are NOT scanned.** Files with bad or secret-bearing names,
+  files under too-deep or skipped directories, oversize, binary, special and
+  unreadable files produce no findings; they appear only in `scanner.stats`
+  counters and `skip_samples`. A clean result therefore means "no matches in
+  what was scanned"; check `stats` for skips and cap flags.
 - Skips are visible: `scanner.stats` has a counter per reason plus
   `skip_samples`, a list of at most 50 `(reason, path)` pairs. The path is
   `ascii()`-escaped and truncated, and is `None` when it looks like a secret.
@@ -88,7 +101,8 @@ and decoded with `errors="replace"`.
 `client_secret` and `aws_secret_access_key` via the `secret` forms), then `:`
 or `=`, then a quoted literal of 8 to 200 non-space, non-quote characters.
 A value is ignored only if the *whole* value is a placeholder: `<...>`,
-`${...}`, `{{...}}`, `%...%`, `$VAR`, a run of `x`/`*`/`#`, a repeated single
+`${NAME}`, `{{name}}`, `%NAME%` and `<name>` (identifier-like contents
+only), an upper-case env-style `$VAR` (so `$uperS3cret` is still reported), a run of `x`/`*`/`#`, a repeated single
 character, or only placeholder words such as `changeme`, `example`,
 `your-api-key-here`. Values that merely contain such words (for example
 `Zx9!realSecretValue42`) are reported. The matched value is always redacted.
@@ -100,6 +114,7 @@ character, or only placeholder words such as `changeme`, `example`,
 | `max_total_bytes` | 64 MiB |
 | `max_findings` | 1000 |
 | `max_line_length` | 2000 (longer lines are truncated before matching) |
+| `max_depth` | 64 (deeper directories are not scanned) |
 | `max_entries` | 200000 (every directory and file entry visited, including skipped ones) |
 
 After a scan, `scanner.stats` (`ScanStats`) reports counts of scanned and

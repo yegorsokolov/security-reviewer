@@ -150,6 +150,62 @@ class ScannerTest(unittest.TestCase):
         for _, path in sc.stats.skip_samples:
             self.assertTrue(path is None or AWS not in path)
 
+    def test_secret_in_glued_path_components_skipped(self):
+        write(self.root, "backup_" + GHP + ".txt", AWS + "\n")
+        write(self.root, GHP + "_old.txt", AWS + "\n")
+        write(self.root, "pre" + SLACK + "x/f.txt", AWS + "\n")
+        write(self.root, "ok.txt", AWS + "\n")
+        sc = SecretScanner()
+        fs = list(sc.scan(self.root))
+        self.assertEqual([f.locations[0].path for f in fs], ["ok.txt"])
+        self.assertEqual(sc.stats.skipped_secret_in_path, 3)
+        self.assertNotIn(GHP[:20], repr(sc.stats.skip_samples))
+
+    def test_dollar_var_shape_is_case_sensitive(self):
+        write(self.root, "a.py", 'password = "$uperS3cret"\n'
+              'password = "$DB_PASSWORD"\n'
+              'password = "<your-key>"\n'
+              'password = "<a!b#c$dEf9>"\n'
+              'password = "%APP_PASSWORD%"\n'
+              'password = "%Zq9!x7Lm2p%"\n')
+        fs = self.scan()
+        self.assertEqual([f.locations[0].start_line for f in fs], [1, 4, 6])
+
+    def _deep(self, n):
+        rel = "/".join(["d"] * n)
+        base = self.root
+        def cleanup():
+            for i in range(n, 0, -1):
+                try:
+                    os.rmdir(os.path.join(base, *(["d"] * i)))
+                except OSError:
+                    pass
+        self.addCleanup(cleanup)
+        cur = base
+        for _ in range(n):
+            cur = os.path.join(cur, "d")
+            os.mkdir(cur)
+        return rel
+
+    def test_depth_cap_default_handles_very_deep_tree(self):
+        rel = self._deep(1100)
+        write(self.root, rel + "/s.txt", AWS + "\n")
+        write(self.root, "top.txt", AWS + "\n")
+        sc = SecretScanner()
+        fs = list(sc.scan(self.root))
+        self.assertEqual([f.locations[0].path for f in fs], ["top.txt"])
+        self.assertTrue(sc.stats.hit_depth_cap)
+        self.assertEqual(sc.stats.skipped_too_deep, 1)
+        self.assertIn("too_deep", [r for r, _ in sc.stats.skip_samples])
+        os.remove(os.path.join(self.root, *rel.split("/"), "s.txt"))
+
+    def test_depth_cap_boundary(self):
+        write(self.root, "a/b/c/s.txt", AWS + "\n")
+        self.assertEqual(len(self.scan(max_depth=3)), 1)
+        sc = SecretScanner(max_depth=2)
+        self.assertEqual(list(sc.scan(self.root)), [])
+        self.assertTrue(sc.stats.hit_depth_cap)
+
     def test_entry_cap(self):
         for i in range(10):
             write(self.root, f"d{i}/f.txt", "x\n")

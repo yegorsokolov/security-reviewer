@@ -40,14 +40,15 @@ _PLACEHOLDER_TOKENS = frozenset({
     "xxx", "xxxx", "default", "demo", "fake", "mock", "secretkey",
 })
 _PLACEHOLDER_SHAPES = re.compile(
-    r"<[^<>]*>|\$\{[^{}]*\}|\{\{[^{}]*\}\}|%[^%]+%|\$[a-z_][a-z0-9_]*"
-    r"|[x*#._-]+|\.\.\.")
+    r"<[A-Za-z][A-Za-z0-9_-]*>|\$\{[A-Za-z_][A-Za-z0-9_]*\}"
+    r"|\{\{[A-Za-z_][A-Za-z0-9_.-]*\}\}|%[A-Za-z_][A-Za-z0-9_]*%"
+    r"|\$[A-Z_][A-Z0-9_]*|[xX*#._-]+")
 
 
 def _is_placeholder(value: str) -> bool:
     """Whole-value test only; substrings never make a value a placeholder."""
     v = value.lower()
-    if _PLACEHOLDER_SHAPES.fullmatch(v) or len(set(v)) == 1:
+    if _PLACEHOLDER_SHAPES.fullmatch(value) or len(set(v)) == 1:
         return True
     tokens = [t for t in re.split(r"[_.\-]+", v) if t]
     return bool(tokens) and all(t in _PLACEHOLDER_TOKENS for t in tokens)
@@ -118,10 +119,10 @@ def _finding_id(rule: Rule, path: str, line_no: int, col: int) -> str:
     return f"secret.{rule.id}.{h}"
 
 
-_LONG_RUN = re.compile(r"[A-Za-z0-9+/=_-]{12,}")
+_LONG_RUN = re.compile(r"\S{12,}")
 
 
-def _redacted_snippet(line: str, truncated: bool, limit: int) -> str:
+def _redacted_snippet(line: str, limit: int) -> str:
     """Text before the first secret-like match, then [REDACTED]. Nothing after
     a match is ever kept, and long token-like runs in the prefix are masked."""
     starts = [s for r in RULES for s, _ in r.matches(line, True)]
@@ -135,9 +136,9 @@ def _to_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _build_finding(rule, path, line_no, start, end, line, truncated, limit):
+def _build_finding(rule, path, line_no, start, end, line, limit):
     col = start + 1
-    snippet = _redacted_snippet(line, truncated, limit)
+    snippet = _redacted_snippet(line, limit)
     return Finding(
         id=_finding_id(rule, path, line_no, col),
         title=rule.title,
@@ -162,9 +163,24 @@ def _build_finding(rule, path, line_no, start, end, line, truncated, limit):
     )
 
 
+# Path-specific patterns: deliberately unanchored (no lookbehind/lookahead),
+# so tokens glued to other characters in a name are still caught.
+_PATH_SECRET_RES = (
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"-----BEGIN [A-Z ]{0,20}PRIVATE KEY"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{10,}"),
+    re.compile(r"xox[abprs]-[0-9A-Za-z-]{8,}"),
+    re.compile(r"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token"
+               r"|auth[_-]?token|private[_-]?key)[\"']?\s{0,20}[:=]\s{0,20}"
+               r"[\"']?[^\"'\s]{8,}"),
+)
+
+
 def _secret_in(path: str) -> bool:
-    """True if any secret rule matches the path (names must not leak secrets)."""
-    return any(any(True for _ in r.matches(path, True)) for r in RULES)
+    """True if any path component looks like it contains a secret."""
+    return any(rx.search(part) for part in path.split("/")
+               for rx in _PATH_SECRET_RES)
 
 
 def _read_regular(name, dfd, max_size, stats, rel=None):
@@ -220,6 +236,8 @@ class ScanStats:
     skipped_secret_in_path: int = 0
     entries_visited: int = 0
     hit_entry_cap: bool = False
+    hit_depth_cap: bool = False
+    skipped_too_deep: int = 0
     #: bounded sample of (reason, ascii-escaped path or None) for skips; the
     #: path is None when it looks like it contains a secret.
     skip_samples: list = field(default_factory=list)
@@ -248,13 +266,15 @@ class SecretScanner:
                  max_findings: int = 1_000,
                  max_line_length: int = 2_000,
                  max_entries: int = 200_000,
+                 max_depth: int = 64,
                  skip_dirs=DEFAULT_SKIP_DIRS):
         for name, v in (("max_file_size", max_file_size),
                         ("max_files", max_files),
                         ("max_total_bytes", max_total_bytes),
                         ("max_findings", max_findings),
                         ("max_line_length", max_line_length),
-                        ("max_entries", max_entries)):
+                        ("max_entries", max_entries),
+                        ("max_depth", max_depth)):
             if not isinstance(v, int) or isinstance(v, bool) or v < 1:
                 raise ValueError(f"{name} must be a positive integer")
         self.max_file_size = max_file_size
@@ -263,48 +283,83 @@ class SecretScanner:
         self.max_findings = max_findings
         self.max_line_length = max_line_length
         self.max_entries = max_entries
+        self.max_depth = max_depth
         self.skip_dirs = frozenset(skip_dirs)
         self.stats = ScanStats()
 
     # -- file system helpers
-    def _walk(self, root: str, stats: ScanStats):
-        """Yield (dir_fd, name, rel) sorted; symlinks and specials skipped.
-
-        Uses fwalk(follow_symlinks=False) so entries are handled relative to
-        open directory descriptors.
-        """
-        for dirpath, dirnames, filenames, dfd in os.fwalk(
-                root, follow_symlinks=False):
-            rel_dir = os.path.relpath(dirpath, root)
-            rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/") + "/"
-            keep = []
-            for d in sorted(dirnames):
-                if stats.entries_visited >= self.max_entries:
-                    stats.hit_entry_cap = True
-                    dirnames[:] = []
-                    return
-                stats.entries_visited += 1
-                if d in self.skip_dirs:
+    def _list_dir(self, fd: int, rel_dir: str, stats: ScanStats):
+        """Return (files, subdirs), sorted, classified without following links."""
+        try:
+            names = sorted(os.listdir(fd))
+        except (OSError, ValueError):
+            stats.skip("skipped_unreadable", rel_dir.rstrip("/") or None)
+            return [], []
+        files, subdirs = [], []
+        for n in names:
+            if stats.entries_visited >= self.max_entries:
+                stats.hit_entry_cap = True
+                break
+            stats.entries_visited += 1
+            try:
+                mode = os.stat(n, dir_fd=fd, follow_symlinks=False).st_mode
+            except (OSError, ValueError):
+                stats.skip("skipped_unreadable", rel_dir + n)
+                continue
+            if stat.S_ISLNK(mode):
+                stats.skip("skipped_symlink", rel_dir + n)
+            elif stat.S_ISDIR(mode):
+                if n in self.skip_dirs:
                     continue
-                try:
-                    is_link = stat.S_ISLNK(os.stat(
-                        d, dir_fd=dfd, follow_symlinks=False).st_mode)
-                except (OSError, ValueError):
-                    stats.skip("skipped_unreadable")
-                    continue
-                if is_link:
-                    stats.skip("skipped_symlink", rel_dir + d)
-                elif _secret_in(d):
+                if _secret_in(n):
                     stats.skip("skipped_secret_in_path")
                 else:
-                    keep.append(d)
-            dirnames[:] = keep
-            for fn in sorted(filenames):
-                if stats.entries_visited >= self.max_entries:
-                    stats.hit_entry_cap = True
+                    subdirs.append(n)
+            else:
+                files.append(n)
+        return files, subdirs
+
+    def _walk(self, root: str, stats: ScanStats):
+        """Yield (dir_fd, name, rel): files of a directory (sorted), then its
+        subdirectories (sorted). Iterative; at most max_depth + 1 descriptors
+        are open at once; symlinks are never followed."""
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+        stack = []  # frames: [fd, rel_dir, depth, pending subdirs (reversed)]
+        try:
+            try:
+                fd = os.open(root, flags)
+            except (OSError, ValueError):
+                stats.skip("skipped_unreadable")
+                return
+            rel, depth = "", 0
+            while True:
+                files, subs = self._list_dir(fd, rel, stats)
+                stack.append([fd, rel, depth, subs[::-1]])
+                for n in files:
+                    yield fd, n, rel + n
+                fd = None
+                while stack and fd is None:
+                    top = stack[-1]
+                    if stats.hit_entry_cap or not top[3]:
+                        os.close(top[0])
+                        stack.pop()
+                        continue
+                    d = top[3].pop()
+                    if top[2] + 1 > self.max_depth:
+                        stats.hit_depth_cap = True
+                        stats.skip("skipped_too_deep", top[1] + d)
+                        continue
+                    try:
+                        fd = os.open(d, flags | os.O_NOFOLLOW, dir_fd=top[0])
+                    except (OSError, ValueError):
+                        stats.skip("skipped_unreadable", top[1] + d)
+                        continue
+                    rel, depth = top[1] + d + "/", top[2] + 1
+                if fd is None:
                     return
-                stats.entries_visited += 1
-                yield dfd, fn, rel_dir + fn
+        finally:
+            for frame in stack:
+                os.close(frame[0])
 
     def _read(self, name: str, dfd: int, stats: ScanStats,
               rel: str | None = None) -> bytes | None:
@@ -326,7 +381,7 @@ class SecretScanner:
                 continue
             for rule in RULES:
                 for s, e in rule.matches(line):
-                    yield _build_finding(rule, path, n, s, e, line, truncated,
+                    yield _build_finding(rule, path, n, s, e, line,
                                          self._snippet_limit())
 
     # -- Scanner protocol
