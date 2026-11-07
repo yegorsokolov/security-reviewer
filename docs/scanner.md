@@ -53,21 +53,25 @@ pattern redaction: a secret in a format no rule recognises and shorter than
 | `private-key` | PEM `-----BEGIN ... PRIVATE KEY-----` header | high | medium |
 | `github-token` | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` and `github_pat_` tokens | high | medium |
 | `slack-token` | `xoxa-`/`xoxb-`/`xoxp-`/`xoxr-`/`xoxs-` tokens | high | medium |
-| `generic-credential` | `password`, `passwd`, `secret`, `api_key`, `access_token` assigned a quoted literal of 8+ characters; obvious placeholders (`changeme`, `example`, `<...>`, `${...}`, repeated characters) are ignored | medium | low |
+| `generic-credential` | a credential keyword (see below) assigned a quoted literal of 8+ characters; whole-value placeholders (see below) are ignored | medium | low |
 
 ### Untrusted content and limits
 
 Scanned files are data. They are never imported or executed, are read as bytes
 and decoded with `errors="replace"`.
 
-- Symlinks (files and directories) are skipped. The tree is walked with
-  `os.fwalk(follow_symlinks=False)`; each entry is `lstat`ed relative to its
-  directory descriptor and only regular files are opened (with `dir_fd`,
+- Symlinks (files and directories) are skipped. The walker is iterative: it
+  opens `root` with `O_RDONLY|O_DIRECTORY|O_CLOEXEC`, lists each directory
+  with `os.listdir(fd)`, classifies every entry with `lstat` relative to that
+  directory descriptor, and opens each subdirectory with
+  `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` relative to its parent
+  descriptor. Only regular files are opened (with `dir_fd`,
   `O_NOFOLLOW|O_NONBLOCK`, then re-checked with `fstat`). Devices, FIFOs and
   sockets are never opened. This closes the usual symlink-swap races for
   everything below `root`; `root` itself is opened as given, so pass a
   trusted path. An attacker able to rename parent directories above `root`
-  during a scan is out of scope.
+  during a scan is out of scope. Descriptors are closed promptly, including
+  when a cap ends the scan early.
 - Skipped directories: `.git`, `node_modules`, `vendor`, `.venv`, `venv`,
   `__pycache__` and similar (`skip_dirs`).
 - Files containing NUL bytes are skipped as binary.
@@ -81,8 +85,9 @@ and decoded with `errors="replace"`.
   deeply nested tree cannot exhaust descriptors or the recursion limit.
   Directories deeper than the cap are not scanned: they are counted in
   `skipped_too_deep`, `hit_depth_cap` is set and a skip sample is recorded.
-- Secret-in-name detection uses separate, unanchored patterns applied to every
-  path component, so tokens glued to other characters (`backup_ghp_<token>.txt`)
+- Secret-in-name detection uses separate, unanchored patterns applied to the
+  joined relative path and to every path component (so a value split across
+  directory and file name, like `password=/Hunter2Hunter2`, is caught), so tokens glued to other characters (`backup_ghp_<token>.txt`)
   are still caught.
 - **Skipped files are NOT scanned.** Files with bad or secret-bearing names,
   files under too-deep or skipped directories, oversize, binary, special and
@@ -95,17 +100,23 @@ and decoded with `errors="replace"`.
 
 ### Generic rule keywords
 
-`generic-credential` matches (case-insensitive) `password`, `passwd`, `pwd`,
-`secret`, `secret_key`, `secret_access_key`, `api_key`, `access_token`,
-`auth_token` and `private_key` (`_`/`-` interchangeable where shown, including
-`client_secret` and `aws_secret_access_key` via the `secret` forms), then `:`
-or `=`, then a quoted literal of 8 to 200 non-space, non-quote characters.
-A value is ignored only if the *whole* value is a placeholder: `<...>`,
-`${NAME}`, `{{name}}`, `%NAME%` and `<name>` (identifier-like contents
-only), an upper-case env-style `$VAR` (so `$uperS3cret` is still reported), a run of `x`/`*`/`#`, a repeated single
-character, or only placeholder words such as `changeme`, `example`,
-`your-api-key-here`. Values that merely contain such words (for example
-`Zx9!realSecretValue42`) are reported. The matched value is always redacted.
+`generic-credential` matches (case-insensitive) the keywords `password`,
+`passwd`, `pwd`, `secret`, `secret_key`, `secret_access_key`, `api_key`,
+`access_token`, `auth_token` and `private_key` (`_` or `-` or nothing between
+the words where shown; `client_secret` and `aws_secret_access_key` match via
+the `secret` forms), then `:` or `=`, then a quoted literal of 8 to 200
+non-space, non-quote characters. The same keyword list is used for the
+secret-in-file-name check (one shared constant).
+
+A value is ignored only if the whole value is a placeholder. The exact shapes
+are: `<name>`, `${NAME}`, `{{name}}`, `%NAME%` (identifier-like contents
+only), `$VAR` with an all-upper-case env-style name (so all-uppercase `$VAR`
+values are treated as placeholders and not reported, while `$uperS3cret` is
+reported), a value made only of `x`, `X`, `*`, `#`, `.`, `_` or `-`
+characters, a single repeated character, or only placeholder words such as
+`changeme`, `example`, `your-api-key-here` (joined by `_`, `-` or `.`). Values
+that merely contain such words (for example `Zx9!realSecretValue42`) are
+reported. The matched value is always redacted.
 
 | Constructor parameter | Default |
 | --- | --- |
@@ -126,7 +137,8 @@ A deterministic `Validator`: re-reads the recorded line through the
 `ContextReader`, and if the rule still matches at the recorded column it
 returns the finding transitioned `hypothesis -> validated` with
 `ValidationMethod.TOOL_CONFIRMED`. This confirms the pattern is present, not
-that the credential is live. Otherwise it returns `None`.
+that the credential is live. Otherwise it returns `None`, including when the
+reader raises.
 `LocalContextReader(root)` opens each directory component with
 `O_DIRECTORY|O_NOFOLLOW` relative to its parent descriptor and the file as the
 scanner does, and returns `None` for invalid paths, symlinks, special files

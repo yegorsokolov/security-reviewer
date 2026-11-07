@@ -161,6 +161,39 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(sc.stats.skipped_secret_in_path, 3)
         self.assertNotIn(GHP[:20], repr(sc.stats.skip_samples))
 
+    def test_path_check_matches_every_content_rule(self):
+        from security_reviewer.secret_scanner import _secret_in
+        samples = [AWS, PEM, GHP, GHPAT, SLACK, GENERIC,
+                   'secret_key="Abcdefgh12"', "secret-key=Abcdefgh12",
+                   "secretkey=Abcdefgh12", 'aws_secret_access_key="Abcdefgh12"',
+                   "client_secret: 'Abcdefgh12'", "auth_token=Abcdefgh12",
+                   "api-key=Abcdefgh12", "private_key=Abcdefgh12",
+                   "pre_" + GHP + "_post", "pre" + AWS + "x"]
+        for smp in samples:
+            for path in (smp + ".txt", smp + "/f.txt", "d/" + smp, smp):
+                with self.subTest(path=path):
+                    self.assertTrue(_secret_in(path))
+        # real files/dirs with such names are skipped, not reported
+        for i, smp in enumerate(samples[:9]):
+            if "/" in smp:
+                continue
+            write(self.root, f"{i}/" + smp, AWS + "\n")
+            write(self.root, smp + f"/{i}.txt", AWS + "\n")
+        sc = SecretScanner()
+        self.assertEqual(list(sc.scan(self.root)), [])
+        self.assertGreaterEqual(sc.stats.skipped_secret_in_path, 10)
+
+    def test_joined_path_secret_skipped(self):
+        from security_reviewer.secret_scanner import _secret_in
+        self.assertTrue(_secret_in("password=/Hunter2Hunter2"))
+        write(self.root, "password=/Hunter2Hunter2", AWS + "\n")
+        write(self.root, "ok.txt", AWS + "\n")
+        sc = SecretScanner()
+        fs = list(sc.scan(self.root))
+        self.assertEqual([f.locations[0].path for f in fs], ["ok.txt"])
+        self.assertEqual(sc.stats.skipped_secret_in_path, 1)
+        self.assertNotIn("Hunter2", repr(sc.stats.skip_samples))
+
     def test_dollar_var_shape_is_case_sensitive(self):
         write(self.root, "a.py", 'password = "$uperS3cret"\n'
               'password = "$DB_PASSWORD"\n'
@@ -346,6 +379,13 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(Finding.from_json(out.to_json()), out)
         self.assertNotIn(AWS, out.to_json())
         self.assertIs(f.status, Status.HYPOTHESIS)
+
+    def test_reader_exception_returns_none(self):
+        (f,) = SecretScanner().scan(self.root)
+
+        def boom(path):
+            raise RuntimeError("x")
+        self.assertIsNone(self.v.validate(f, boom))
 
     def test_unchanged_when_gone_or_handled(self):
         (f,) = SecretScanner().scan(self.root)

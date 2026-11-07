@@ -6,6 +6,7 @@ No finding field ever contains a full secret value.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -73,6 +74,12 @@ class Rule:
             yield m.start(self.group), m.end(self.group)
 
 
+# Single source of truth for credential keywords; used by the content rule and
+# by the path-name check so the two cannot drift apart.
+CRED_KEYWORDS = (
+    r"(?:password|passwd|pwd|secret(?:[_-]?access)?(?:[_-]?key)?"
+    r"|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)")
+
 RULES = (
     Rule("aws-access-key-id", "AWS access key ID in source", Severity.HIGH,
          Confidence.MEDIUM, re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])")),
@@ -89,9 +96,8 @@ RULES = (
              r"(?<![A-Za-z0-9])xox[abprs]-[0-9A-Za-z-]{10,200}")),
     Rule("generic-credential", "Hardcoded credential assignment",
          Severity.MEDIUM, Confidence.LOW, re.compile(
-             r"(?i)(?:password|passwd|pwd|secret(?:[_-]?access)?(?:[_-]?key)?"
-             r"|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)"
-             r"[\"']?\s{0,20}[:=]\s{0,20}[\"']([^\"'\s]{8,200})[\"']"),
+             r"(?i)" + CRED_KEYWORDS + r"[\"']?\s{0,20}[:=]\s{0,20}"
+             r"[\"']([^\"'\s]{8,200})[\"']"),
          group=1, reject_placeholders=True),
 )
 _RULES_BY_ID = {r.id: r for r in RULES}
@@ -171,15 +177,18 @@ _PATH_SECRET_RES = (
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{10,}"),
     re.compile(r"xox[abprs]-[0-9A-Za-z-]{8,}"),
-    re.compile(r"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token"
-               r"|auth[_-]?token|private[_-]?key)[\"']?\s{0,20}[:=]\s{0,20}"
+    re.compile(r"(?i)" + CRED_KEYWORDS + r"[\"']?\s{0,20}[:=]\s{0,20}"
                r"[\"']?[^\"'\s]{8,}"),
 )
 
 
 def _secret_in(path: str) -> bool:
-    """True if any path component looks like it contains a secret."""
-    return any(rx.search(part) for part in path.split("/")
+    """True if the joined path or any component looks like it contains a secret.
+
+    The unanchored search over the joined path also covers every suffix of
+    joined components (e.g. directory ``password=`` + file ``Hunter2Hunter2``).
+    """
+    return any(rx.search(t) for t in (path, *path.split("/"))
                for rx in _PATH_SECRET_RES)
 
 
@@ -333,8 +342,10 @@ class SecretScanner:
                 return
             rel, depth = "", 0
             while True:
+                frame = [fd, rel, depth, []]
+                stack.append(frame)  # on the stack first: finally closes it
                 files, subs = self._list_dir(fd, rel, stats)
-                stack.append([fd, rel, depth, subs[::-1]])
+                frame[3] = subs[::-1]
                 for n in files:
                     yield fd, n, rel + n
                 fd = None
@@ -390,7 +401,11 @@ class SecretScanner:
         if not os.path.isdir(root):
             raise ValueError("root must be an existing directory")
         self.stats = stats = ScanStats()
-        for dfd, name, rel in self._walk(root, stats):
+        with contextlib.closing(self._walk(root, stats)) as walker:
+            yield from self._scan_files(walker, stats)
+
+    def _scan_files(self, walker, stats):
+        for dfd, name, rel in walker:
             if stats.findings >= self.max_findings:
                 stats.hit_finding_cap = True
                 return
@@ -475,8 +490,11 @@ class SecretValidator:
                 or finding.category != CATEGORY or not finding.locations):
             return None
         loc = finding.locations[0]
-        text = reader(loc.path)
-        if text is None:
+        try:
+            text = reader(loc.path)
+        except Exception:  # a failing reader means "cannot confirm"
+            return None
+        if not isinstance(text, str):
             return None
         lines = text.split("\n")
         if loc.start_line > len(lines):
