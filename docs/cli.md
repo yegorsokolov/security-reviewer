@@ -72,7 +72,15 @@ A single JSON object (sorted keys, 2-space indent, ASCII, trailing newline):
 - `coverage`: `rules_run` (`secret` and `vulnerability` rule ids),
   `source_detectors_ran`, `files_seen` (per language), `files_parsed`, and
   `unsupported` (`unparseable` Python files, `unsupported_language` files).
+  `detector_errors` (files where a detector aborted) and `detector_skipped`
+  (functions skipped because they exceeded the per-function or per-file work
+  cap) also count as unanalysed. `source_scan_caps_hit` repeats the
+  walker cap flags (entries, depth, files, bytes, findings) of the source
+  detector pass.
   A clean result means "nothing found in what was analysed"; check it.
+- `--max-findings` applies to each scanner separately (secrets, then source
+  detectors), so the report can hold up to twice that many findings.
+- `--package` requires `--advisories` (usage error otherwise).
 - `advisory_matches`: always present, separate from `findings`. One record
   per (advisory, `--package`) pair whose package names match (PEP 503
   normalised), with `status` `affected`, `patched` or `not_affected`.

@@ -44,6 +44,53 @@ def language_of(path: str) -> str:
     return _LANGUAGES.get(path[dot:].lower(), "other") if dot > 0 else "other"
 
 
+# ------------------------------------------------------------ work caps
+#: Per-function and per-file work caps (roughly "AST nodes visited"). A
+#: function or file that exceeds them is skipped and counted under
+#: ``coverage["detector_skipped"]``; it is never an error.
+MAX_FUNCTION_WORK = 3_000_000
+MAX_FILE_WORK = 6_000_000
+
+
+class _OverBudget(Exception):
+    pass
+
+
+class _Work:
+    """Work accounting shared by all detectors for one file."""
+
+    def __init__(self, function_cap=None, file_cap=None):
+        self.function_cap = function_cap or MAX_FUNCTION_WORK
+        self.file_left = file_cap or MAX_FILE_WORK
+        self.fn_left = function_cap
+        self.skipped = 0
+
+    def begin_function(self):
+        self.fn_left = self.function_cap
+        self.charge(0)
+
+    def charge(self, n):
+        self.fn_left -= n
+        self.file_left -= n
+        if self.fn_left < 0 or self.file_left < 0:
+            raise _OverBudget
+
+    def nodes(self, node):
+        out = list(ast.walk(node))
+        self.charge(len(out))
+        return out
+
+    def nodes_of(self, stmts):
+        out = list(_walk_stmts(stmts))
+        self.charge(len(out))
+        return out
+
+    def own(self, fn):
+        out = list(_own_nodes(fn))
+        self.charge(len(out))
+        return out
+
+
 # ------------------------------------------------------------ AST helpers
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _LOOPS = (ast.For, ast.AsyncFor, ast.While, ast.ListComp, ast.SetComp,
@@ -110,29 +157,73 @@ def _leading_slash_check(node):
                for n in ast.walk(node))
 
 
-def detect_path_join_absolute(tree):
+def _path_join_function(fn, work):
+    own = work.own(fn)
+    calls = [n for n in own if isinstance(n, ast.Call)]
+    if not any(_call_name(c) in ("join", "joinpath") for c in calls):
+        return []
+    if any(_call_name(c) in _CONTAINMENT_CALLS for c in calls):
+        return []
+    isabs = [c for c in calls if _call_name(c) == "isabs" and c.args]
+    if not isabs:
+        return []
+    # One pass over the probes: per-name counts of probes that test '..'
+    # and probes that mention a leading slash. Each probe is walked once.
+    trav_by_name: dict = {}
+    slash_by_name: dict = {}
+    info: dict = {}
+    for p in own:
+        if not isinstance(p, (ast.Compare, ast.Call)):
+            continue
+        nodes = work.nodes(p)
+        names, strs, slash = set(), set(), False
+        for n in nodes:  # one walk: names, string constants, '/' or sep
+            if isinstance(n, ast.Name):
+                names.add(n.id)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+                strs.add(n.value)
+            elif isinstance(n, ast.Attribute) and n.attr in ("sep", "altsep"):
+                slash = True
+        if not names:
+            continue
+        slash = slash or "/" in strs
+        if isinstance(p, ast.Compare):
+            trav = bool(strs & _TRAVERSAL_CONSTS)
+        else:
+            trav = _traversal_check(p) if _call_name(p) in _TEST_CALLS \
+                else False
+        info[id(p)] = (trav, slash)
+        for nm in names:
+            if trav:
+                trav_by_name[nm] = trav_by_name.get(nm, 0) + 1
+            if slash:
+                slash_by_name[nm] = slash_by_name.get(nm, 0) + 1
+    out = []
+    for c in isabs:
+        argnames = {n.id for n in work.nodes(c.args[0])
+                    if isinstance(n, ast.Name)}
+        if not argnames:
+            continue
+        self_trav, self_slash = info[id(c)]  # c mentions all of argnames
+        if not any(trav_by_name.get(n, 0) - self_trav > 0 for n in argnames):
+            continue
+        if any(slash_by_name.get(n, 0) - self_slash > 0 for n in argnames):
+            continue
+        out.append((c.lineno, c.col_offset + 1))
+    return out
+
+
+def detect_path_join_absolute(tree, work=None):
     """Yield (line, col) of ``isabs(x)`` guards that miss a leading '/'."""
+    work = work or _Work()
     for fn in _functions(tree):
-        own = list(_own_nodes(fn))
-        calls = [n for n in own if isinstance(n, ast.Call)]
-        if not any(_call_name(c) in ("join", "joinpath") for c in calls):
+        try:
+            work.begin_function()
+            found = _path_join_function(fn, work)
+        except _OverBudget:
+            work.skipped += 1
             continue
-        if any(_call_name(c) in _CONTAINMENT_CALLS for c in calls):
-            continue
-        probes = [n for n in own if isinstance(n, (ast.Compare, ast.Call))]
-        for c in calls:
-            if _call_name(c) != "isabs" or not c.args:
-                continue
-            argnames = _names(c.args[0])
-            if not argnames:
-                continue
-            related = [p for p in probes if p is not c
-                       and argnames & _names(p)]
-            if not any(_traversal_check(p) for p in related):
-                continue
-            if any(_leading_slash_check(p) for p in related):
-                continue
-            yield c.lineno, c.col_offset + 1
+        yield from found
 
 
 # ------------------------------------------------- rule 2: tar symlinks
@@ -164,12 +255,22 @@ def _target_names(node):
     return []
 
 
-def _related_fn(own, helpers):
-    """Return a predicate: does an expression relate to a link target?"""
+_RESOLVE_CALLS = {"startswith", "commonpath", "realpath", "is_relative_to",
+                  "relative_to", "getmember", "getnames", "getmembers"}
+
+
+def _related_fn(own, helpers, work):
+    """Return (related, strong) predicates over expressions.
+
+    ``related``: does an expression involve a link target (linkname, a
+    variable derived from it, a link-ish helper)? ``strong``: is it also a
+    real comparison/resolution (prefix/containment/realpath call, an
+    in-archive lookup, or a link-ish helper call) rather than a bare truth
+    test such as ``if not m.linkname``?"""
     link_vars: set = set()
 
     def related(expr):
-        for n in ast.walk(expr):
+        for n in work.nodes(expr):
             if isinstance(n, ast.Attribute) and n.attr == "linkname":
                 return True
             if isinstance(n, ast.Call):
@@ -180,12 +281,21 @@ def _related_fn(own, helpers):
                 return True
         return False
 
+    def strong(expr):
+        for n in work.nodes(expr):
+            if isinstance(n, ast.Call):
+                nm = _call_name(n)
+                if nm in _RESOLVE_CALLS or nm in helpers \
+                        or _linkish_name(nm):
+                    return True
+        return False
+
     for _ in range(3):  # a few rounds of one-step propagation
         for n in own:
             if _target_names(n) and getattr(n, "value", None) is not None \
                     and related(n.value):
                 link_vars.update(_target_names(n))
-    return related
+    return related, lambda e: related(e) and strong(e)
 
 
 def _walk_stmts(stmts):
@@ -193,53 +303,91 @@ def _walk_stmts(stmts):
         yield from ast.walk(s)
 
 
-def detect_tar_symlink_unchecked(tree):
+def _extract_calls(nodes):
+    return [c for c in nodes if isinstance(c, ast.Call)
+            and _call_name(c) in _EXTRACT_CALLS
+            and not any(k.arg == "filter" for k in c.keywords)]
+
+
+def _tar_function(fn, work, helpers):
+    own = work.own(fn)
+    if not any(isinstance(n, _LOOPS) for n in own):
+        return []
+    branches = []
+    for n in own:
+        if isinstance(n, ast.If) and any(
+                isinstance(c, ast.Call) and _call_name(c) in _LINK_TESTS
+                for c in work.nodes(n.test)):
+            branches.append(n)
+    if not branches:
+        return []
+    work.charge(3 * len(own))
+    related, guard_test = _related_fn(own, helpers, work)
+
+    # Guards, computed once per function: (line, node id, unconditional,
+    # extract-call ids it wraps). Unconditional = asserts and Ifs that exit.
+    guards = {}
+    wrappers: dict = {}
+    for n in own:
+        if isinstance(n, ast.Assert) and guard_test(n.test):
+            guards[id(n)] = (n.lineno, id(n), True)
+        elif isinstance(n, ast.If) and guard_test(n.test):
+            inner = work.nodes_of(n.body + n.orelse)
+            if any(isinstance(x, _EXIT) for x in inner):
+                guards[id(n)] = (n.lineno, id(n), True)
+            else:
+                g = (n.lineno, id(n), False)
+                guards[id(n)] = g
+                for c in _extract_calls(inner):
+                    wrappers.setdefault(id(c), []).append(g)
+
+    # Union of all branch bodies, built once: cover[id] = number of branches
+    # whose body contains the node. A node is excluded for branch b iff it
+    # is covered and not inside b's own body (i.e. it is in a sibling's).
+    body_ids, body_ex, guards_in, cover = {}, {}, {}, {}
+    for b in branches:
+        nodes = work.nodes_of(b.body)
+        ids = {id(x) for x in nodes}
+        body_ids[id(b)] = ids
+        body_ex[id(b)] = _extract_calls(nodes)
+        guards_in[id(b)] = [guards[i] for i in ids if i in guards]
+        for i in ids:
+            cover[i] = cover.get(i, 0) + 1
+    free_min = min((g[0] for i, g in guards.items()
+                    if g[2] and i not in cover), default=None)
+
+    out = []
+    for b in branches:
+        ex = body_ex[id(b)]
+        if not ex:
+            continue
+        ex_line = min(c.lineno for c in ex)
+        if related(b.test):
+            continue
+        mine = body_ids[id(b)]
+        if free_min is not None and free_min <= ex_line:
+            continue
+        if any(g[2] and g[0] <= ex_line for g in guards_in[id(b)]):
+            continue
+        if any(g[0] <= ex_line and (g[1] not in cover or g[1] in mine)
+               for c in ex for g in wrappers.get(id(c), ())):
+            continue
+        out.append((b.lineno, b.col_offset + 1))
+    return out
+
+
+def detect_tar_symlink_unchecked(tree, work=None):
     """Yield (line, col) of symlink/hardlink branches that extract unchecked."""
+    work = work or _Work()
     helpers = _helpers_using_linkname(tree)
     for fn in _functions(tree):
-        own = list(_own_nodes(fn))
-        if not any(isinstance(n, _LOOPS) for n in own):
+        try:
+            work.begin_function()
+            found = _tar_function(fn, work, helpers)
+        except _OverBudget:
+            work.skipped += 1
             continue
-        branches = [n for n in own if isinstance(n, ast.If) and any(
-            isinstance(c, ast.Call) and _call_name(c) in _LINK_TESTS
-            for c in ast.walk(n.test))]
-        if not branches:
-            continue
-        related = _related_fn(own, helpers)
-        body_ids = {id(b): {id(n) for n in _walk_stmts(b.body)}
-                    for b in branches}
-        for b in branches:
-            ex = [c for c in _walk_stmts(b.body)
-                  if isinstance(c, ast.Call)
-                  and _call_name(c) in _EXTRACT_CALLS
-                  and not any(k.arg == "filter" for k in c.keywords)]
-            if not ex:
-                continue
-            ex_line = min(c.lineno for c in ex)
-            if related(b.test):
-                continue
-            others = set()
-            for o in branches:
-                if o is not b:
-                    others |= body_ids[id(o)] - body_ids[id(b)]
-            if _guarded(own, others, related, ex, ex_line):
-                continue
-            yield b.lineno, b.col_offset + 1
-
-
-def _guarded(own, excluded, related, ex, ex_line):
-    ex_ids = {id(c) for c in ex}
-    for n in own:
-        if id(n) in excluded or getattr(n, "lineno", ex_line + 1) > ex_line:
-            continue
-        if isinstance(n, ast.Assert) and related(n.test):
-            return True
-        if isinstance(n, ast.If) and related(n.test):
-            inner = list(_walk_stmts(n.body + n.orelse))
-            if any(isinstance(x, _EXIT) for x in inner) \
-                    or any(id(x) in ex_ids for x in inner):
-                return True
-    return False
+        yield from found
 
 
 # ------------------------------------------------------------------ rules
@@ -355,15 +503,17 @@ class VulnScanner(SecretScanner):
         cov["files_parsed"] += 1
         lines = text.split("\n")
         hits = []
+        work = _Work()
         for rule in list(DETECTORS.values()):
             if not any(tok in text for tok in rule.needs):
                 continue
             try:
-                found = sorted(set(rule.detect(tree)))
+                found = sorted(set(rule.detect(tree, work)))
             except RecursionError:
                 cov["detector_errors"] += 1
                 continue
             hits.extend((ln, col, rule) for ln, col in found)
+        cov["detector_skipped"] += work.skipped
         for ln, col, rule in sorted(hits, key=lambda h: (h[0], h[1], h[2].id)):
             yield _build(rule, path, ln, col, lines)
 
@@ -371,4 +521,4 @@ class VulnScanner(SecretScanner):
 def _new_coverage():
     return {"rules_run": [], "files_seen": {}, "files_parsed": 0,
             "unsupported": {"unparseable": 0, "unsupported_language": 0},
-            "detector_errors": 0}
+            "detector_errors": 0, "detector_skipped": 0}

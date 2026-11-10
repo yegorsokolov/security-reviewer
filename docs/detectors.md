@@ -35,7 +35,11 @@ Rule details:
   link target (`linkname`, a variable derived from it, a helper whose name
   contains `link`, or a same-module helper reading `linkname`) leads to
   `raise`/`continue`/`return`/`break` or wraps the extraction. A guard inside a
-  sibling link branch does not excuse another branch.
+  sibling link branch does not excuse another branch. The guard condition
+  must also be a comparison or resolution (a call to `startswith`,
+  `commonpath`, `realpath`, `is_relative_to`, `relative_to`, an in-archive
+  `getmember`/`getnames` lookup, or a link-ish helper); a bare truth test
+  such as `if not m.linkname: continue` is not a guard.
 
 ## Advisory matching is separate
 
@@ -54,5 +58,15 @@ compares a declared version with a range and lists the result in
   no cross-module data flow, no aliasing, no dynamic dispatch. Guards in
   other modules are invisible, so expect false positives; absent guards that
   use unusual spellings can cause false negatives.
+- Guard heuristics are loose by design. For the path-join rule, any `/`
+  constant or `sep`/`altsep` attribute in an expression sharing the variable
+  counts as a leading-slash check, so `name.split('/')` suppresses a finding
+  even though it does not reject a leading slash (false negative). For the
+  tar rule, a guard whose condition merely calls a link-ish helper or the
+  listed resolution calls counts, without proof it compares against the
+  destination (false negative); the check position is by line number only.
+- Work caps: a function (about 3M node visits) or file (about 6M) that
+  exceeds the analysis budget is skipped and counted in
+  `coverage.detector_skipped`; analysis is otherwise linear in function size.
 - Two rules only. A clean report does not mean a repository is safe.
 - Findings are hypotheses; there is no exploit reproduction.

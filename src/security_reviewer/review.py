@@ -18,6 +18,9 @@ from .vuln_detectors import DETECTORS, VulnScanner
 LIMITS = ("max_file_size", "max_files", "max_total_bytes", "max_findings",
           "max_line_length", "max_entries", "max_depth")
 
+_CAP_FLAGS = ("hit_entry_cap", "hit_depth_cap", "hit_file_cap",
+              "hit_byte_cap", "hit_finding_cap")
+
 
 class ReviewError(Exception):
     """PATH cannot be read."""
@@ -46,7 +49,10 @@ class ScanResult:
 
 
 def scan_tree(path, *, secrets=True, vuln=True, limits=None, validator=None):
-    """Scan directory ``path``. Raises ReviewError when it cannot be read."""
+    """Scan directory ``path``. Raises ReviewError when it cannot be read.
+
+    ``max_findings`` applies to each scanner separately (secrets, then source
+    detectors); the cap flags of the second pass are in ``coverage``."""
     limits = limits or {}
     findings, primary, secret_sc, vuln_sc = [], None, None, None
     try:
@@ -81,6 +87,13 @@ def scan_tree(path, *, secrets=True, vuln=True, limits=None, validator=None):
         "files_parsed": vuln_sc.coverage["files_parsed"] if vuln else 0,
         "unsupported": dict(vuln_sc.coverage["unsupported"]) if vuln
         else {"unparseable": 0, "unsupported_language": 0},
+        "detector_errors": vuln_sc.coverage["detector_errors"] if vuln else 0,
+        "detector_skipped": vuln_sc.coverage["detector_skipped"]
+        if vuln else 0,
+        # scan caps hit by the source-detector pass (it walks the tree itself)
+        "source_scan_caps_hit": {
+            k: bool(getattr(vuln_sc.stats, k)) for k in _CAP_FLAGS}
+        if vuln else {k: False for k in _CAP_FLAGS},
     }
     return ScanResult(findings, stats,
                       {k: getattr(primary, k) for k in LIMITS}, cov,

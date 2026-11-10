@@ -117,7 +117,7 @@ def load_advisories(path):
         if len(data) > 4 * 1024 * 1024:
             raise AdvisoryError("advisories file too large")
         doc = json.loads(data.decode("utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         if isinstance(exc, AdvisoryError):
             raise
         raise AdvisoryError("cannot read advisories file") from None

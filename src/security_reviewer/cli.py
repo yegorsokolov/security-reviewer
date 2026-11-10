@@ -119,6 +119,8 @@ def _review(args):
                          f"and {_MAX_EPOCH}")
     if args.no_secrets and args.no_vuln:
         return _fail("--no-secrets and --no-vuln leave nothing to run")
+    if args.package and not args.advisories:
+        return _fail("--package requires --advisories")
     try:
         packages = [advisories.parse_package_spec(p) for p in args.package]
         advs = advisories.load_advisories(args.advisories) \

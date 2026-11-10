@@ -5,6 +5,7 @@ import re
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -12,7 +13,7 @@ from unittest import mock
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 sys.path.insert(0, SRC)
 
-from security_reviewer import cli, vuln_detectors  # noqa: E402
+from security_reviewer import cli, review, vuln_detectors  # noqa: E402
 from security_reviewer.advisories import (  # noqa: E402
     AdvisoryError, in_range, parse_version,
 )
@@ -197,6 +198,69 @@ class TestTarSymlink(unittest.TestCase):
     def test_renamed_identifiers_still_match(self):
         text = re.sub(r"\bmember\b", "e", TAR_VULN).replace("archive", "tf")
         self.assertEqual([r for r, _ in rules(text)], [TAR])
+
+
+class TestHostileInputs(unittest.TestCase):
+    def timed(self, text, bound=20):
+        t0 = time.perf_counter()
+        fs, sc = scan_one(text)
+        self.assertLess(time.perf_counter() - t0, bound)
+        self.assertLess(len(text), 1024 * 1024)
+        return fs, sc
+
+    def test_many_isabs_lines_scan_in_linear_time(self):
+        head = ("import os\ndef f(a):\n if a == '..':\n  pass\n"
+                " os.path.join(a)\n")
+        fs, sc = self.timed(head + " isabs(a)\n" * 80000)
+        self.assertTrue(fs)  # still detected
+        self.assertEqual(sc.coverage["detector_skipped"], 0)
+        fs, _ = self.timed(head + " if a.startswith('/'): pass\n"
+                           + " isabs(a)\n" * 80000)
+        self.assertEqual(fs, [])
+
+    def test_many_tar_branches_scan_in_linear_time(self):
+        body = "  if m.issym(): x.extract(m)\n" * 8000
+        fs, _ = self.timed("def f(a):\n for m in a:\n" + body)
+        self.assertTrue(fs)
+        fs, _ = self.timed("def f(a):\n for m in a:\n"
+                           "  if m.linkname.startswith('x'): raise E\n" + body)
+        self.assertEqual(fs, [])
+
+    def test_work_cap_skips_and_counts(self):
+        with mock.patch.object(vuln_detectors, "MAX_FUNCTION_WORK", 50):
+            fs, sc = scan_one(JOIN_VULN + TAR_VULN)
+        self.assertEqual(fs, [])
+        self.assertGreaterEqual(sc.coverage["detector_skipped"], 2)
+
+    def test_review_coverage_reports_detector_counters(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.py"), "w") as fh:
+                fh.write("x = 1\n")
+            cov = review.scan_tree(d).coverage
+        self.assertEqual((cov["detector_errors"], cov["detector_skipped"]),
+                         (0, 0))
+        self.assertFalse(any(cov["source_scan_caps_hit"].values()))
+
+
+class TestGuardHeuristics(unittest.TestCase):
+    def test_truthiness_check_is_not_a_tar_guard(self):
+        text = ("def f(a, d):\n for m in a:\n  if m.issym():\n"
+                "   if not m.linkname:\n    continue\n   a.extract(m, d)\n")
+        self.assertEqual([r for r, _ in rules(text)], [TAR])
+
+    def test_resolution_guards_are_accepted(self):
+        for check in ("not os.path.realpath(m.linkname).startswith(d)",
+                      "m.linkname not in a.getnames()",
+                      "not os.path.commonpath([d, m.linkname]) == d"):
+            text = ("def f(a, d):\n for m in a:\n  if m.issym():\n"
+                    f"   if {check}:\n    raise ValueError\n"
+                    "   a.extract(m, d)\n")
+            self.assertEqual(rules(text), [], check)
+
+    def test_split_slash_counts_as_slash_check_documented_limitation(self):
+        text = JOIN_VULN.replace(
+            _DOTS, 'or name.split("/")[0] == ""\n            ' + _DOTS)
+        self.assertEqual(rules(text), [])  # known false negative (docs)
 
 
 class TestFindingShape(unittest.TestCase):
@@ -399,6 +463,9 @@ class TestAdvisories(CliBase):
 
     def test_bad_inputs_are_usage_errors(self):
         self.assertEqual(run("review", self.repo, "--package", "x")[0], 2)
+        code, _, err = run("review", self.repo, "--package", "x=1.0")
+        self.assertEqual(code, 2)
+        self.assertIn("--package requires --advisories", err)
         self.assertEqual(run("review", self.repo, "--package", "x=zz")[0], 2)
         self.assertEqual(run("review", self.repo, "--advisories",
                              os.path.join(self.tmp, "no.json"))[0], 2)

@@ -46,7 +46,7 @@ def load_manifest(path):
             raw = fh.read(MAX_MANIFEST_BYTES + 1)
         _req(len(raw) <= MAX_MANIFEST_BYTES, "too large")
         doc = json.loads(raw.decode("utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         raise BenchmarkError("cannot read manifest") from None
     _req(isinstance(doc, dict) and doc.get("schema") == SCHEMA,
          "schema must be 1")
@@ -62,7 +62,8 @@ def load_manifest(path):
         _req(c.get("role") in ROLES, f"{cid}: bad role")
         snap = c.get("snapshot")
         _req(_is_str(snap) and not os.path.isabs(snap) and "\\" not in snap
-             and ".." not in snap.split("/"), f"{cid}: bad snapshot path")
+             and not {"", ".", ".."} & set(snap.split("/")),
+             f"{cid}: bad snapshot path")
         exp = c.get("expected")
         _req(isinstance(exp, list), f"{cid}: expected must be a list")
         for e in exp:
@@ -89,10 +90,29 @@ def load_manifest(path):
     return doc
 
 
+def _inside(path, directory):
+    path, directory = os.path.realpath(path), os.path.realpath(directory)
+    return path == directory or path.startswith(directory.rstrip(os.sep)
+                                                + os.sep)
+
+
+def check_outside_snapshots(manifest, root, files):
+    """The manifest and every file we read or write must not live inside a
+    snapshot (the scanner would read it, or a write would alter the data)."""
+    for c in manifest["cases"]:
+        snap = os.path.join(root, c["snapshot"])
+        for f in files:
+            if f and _inside(f, snap):
+                raise BenchmarkError(
+                    f"{c['id']}: manifest, baseline and output files must "
+                    "not be inside a snapshot")
+
+
 def _snapshot_dir(root, case):
     real_root = os.path.realpath(root)
     p = os.path.join(root, case["snapshot"])
-    if os.path.islink(p) or not os.path.isdir(p) or not (
+    if os.path.islink(p) or not os.path.isdir(p) \
+            or os.path.realpath(p) == real_root or not (
             os.path.realpath(p) + os.sep).startswith(real_root + os.sep):
         raise BenchmarkError(f"{case['id']}: snapshot is not a plain "
                              "directory inside --root")
@@ -234,12 +254,18 @@ def baseline_of(report):
     modes = {}
     for m, sec in report["modes"].items():
         o = sec["overall"]
-        modes[m] = {
-            "overall": {k: o[k] for k in ("tp", "fp", "fn")},
-            "cases": {cid: {"role": c["role"], "expected": c["expected"],
-                            "tp": c["tp"], "fp": c["fp"]}
-                      for cid, c in sec["cases"].items()},
-        }
+        cases = {}
+        for cid, c in sec["cases"].items():
+            cases[cid] = {"role": c["role"], "expected": c["expected"],
+                          "tp": c["tp"], "fp": c["fp"]}
+            if "advisory" in c:
+                a = c["advisory"]
+                cases[cid]["advisory"] = None if a is None else {
+                    "status": a["status"], "in_range": a["in_range"]}
+        modes[m] = {"overall": {k: o[k] for k in ("tp", "fp", "fn")},
+                    "cases": cases}
+        if "advisory" in sec:
+            modes[m]["advisory"] = dict(sec["advisory"])
     return {"schema_version": 1, "split": report["split"], "modes": modes}
 
 
@@ -250,6 +276,46 @@ def _frac(num, den):
 def _pr(o):
     return (_frac(o["tp"], o["tp"] + o["fp"]),
             _frac(o["tp"], o["tp"] + o["fn"]))
+
+
+_AD_KEYS = ("advisory_false_alarms", "corroborated_tp")
+
+
+def _is_count(v):
+    return type(v) is int and v >= 0
+
+
+def _check_base_mode(base):
+    """Validate one baseline mode section; return (cases, overall)."""
+    try:
+        cases, overall = base["cases"], base["overall"]
+        ok = isinstance(cases, dict) and isinstance(overall, dict) \
+            and all(_is_count(overall[k]) for k in ("tp", "fp", "fn"))
+        for c in cases.values() if ok else ():
+            ok = ok and isinstance(c, dict) \
+                and isinstance(c["role"], str) \
+                and isinstance(c["expected"], list) \
+                and all(isinstance(e, list) for e in c["expected"]) \
+                and _is_count(c["tp"]) and _is_count(c["fp"]) \
+                and ("advisory" not in c or c["advisory"] is None
+                     or (isinstance(c["advisory"], dict)
+                         and isinstance(c["advisory"].get("status"), str)
+                         and isinstance(c["advisory"].get("in_range"), bool)))
+        ad = base.get("advisory")
+        ok = ok and (ad is None or (isinstance(ad, dict) and all(
+            _is_count(ad.get(k)) for k in _AD_KEYS)))
+    except (KeyError, TypeError, AttributeError):
+        ok = False
+    if not ok:
+        raise BenchmarkError("invalid baseline file")
+    return cases, overall
+
+
+def _sums(cases):
+    tp = sum(c["tp"] for c in cases.values())
+    fp = sum(c["fp"] for c in cases.values())
+    fn = sum(len(c["expected"]) - c["tp"] for c in cases.values())
+    return {"tp": tp, "fp": fp, "fn": fn}
 
 
 def compare(baseline, report):
@@ -266,16 +332,36 @@ def compare(baseline, report):
         base = baseline["modes"].get(m)
         if base is None:
             raise BenchmarkError(f"baseline has no scores for mode {m!r}")
-        try:
-            bp, br = _pr(base["overall"])
-            bcases = base["cases"]
-        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-            raise BenchmarkError("invalid baseline file") from None
-        cp, cr = _pr(sec["overall"])
+        if not isinstance(base, dict):
+            raise BenchmarkError("invalid baseline file")
+        bcases, boverall = _check_base_mode(base)
+        # Totals must agree with the per-case numbers on both sides; the
+        # (stricter) per-case sums are what is compared.
+        bsum = _sums(bcases)
+        if {k: boverall[k] for k in bsum} != bsum:
+            out.append(f"[{m}] baseline overall does not match its cases "
+                       "(tampered?)")
+        if {k: sec["overall"][k] for k in bsum} != _sums(sec["cases"]):
+            out.append(f"[{m}] report overall does not match its cases")
+        bp, br = _pr(bsum)
+        cp, cr = _pr(_sums(sec["cases"]))
         for name, b, c in (("precision", bp, cp), ("recall", br, cr)):
             if b is not None and (c is None or c < b):
                 out.append(f"[{m}] {name} regressed: "
                            f"{_f(b)} -> {_f(c)}")
+        bad, cad = base.get("advisory"), sec.get("advisory")
+        if bad is not None:
+            if cad is None:
+                out.append(f"[{m}] advisory scores missing from current run")
+            else:
+                if cad["advisory_false_alarms"] > bad["advisory_false_alarms"]:
+                    out.append(f"[{m}] advisory_false_alarms "
+                               f"{bad['advisory_false_alarms']} -> "
+                               f"{cad['advisory_false_alarms']}")
+                if cad["corroborated_tp"] < bad["corroborated_tp"]:
+                    out.append(f"[{m}] corroborated_tp "
+                               f"{bad['corroborated_tp']} -> "
+                               f"{cad['corroborated_tp']}")
         for cid, b in sorted(bcases.items()):
             c = sec["cases"].get(cid)
             if c is None:
@@ -293,6 +379,17 @@ def compare(baseline, report):
             if b["role"] != "vulnerable" and c["fp"] > b["fp"]:
                 out.append(f"[{m}] case {cid}: false positives "
                            f"{b['fp']} -> {c['fp']} on a {b['role']} case")
+            if "advisory" in b:
+                ba, ca = b["advisory"], c.get("advisory")
+                bs = ba["status"] if ba else None
+                cs = ca["status"] if ca else None
+                if bs != cs:
+                    out.append(f"[{m}] case {cid}: advisory status "
+                               f"{bs} -> {cs}")
+                if b["role"] != "vulnerable" and ca and ca["in_range"] \
+                        and not (ba and ba["in_range"]):
+                    out.append(f"[{m}] case {cid}: {b['role']} case flipped "
+                               "to in_range")
     return out
 
 
@@ -351,6 +448,9 @@ def run(args):
         manifest = load_manifest(args.manifest)
         if not os.path.isdir(args.root):
             raise BenchmarkError("--root is not a directory")
+        check_outside_snapshots(manifest, args.root,
+                                (args.manifest, args.baseline,
+                                 args.write_baseline, args.output))
         report = run_benchmark(manifest, args.root, args.split, args.mode,
                                args.deterministic)
         with open(args.manifest, "rb") as fh:
@@ -359,8 +459,11 @@ def run(args):
         if args.baseline:
             try:
                 with open(args.baseline, "rb") as fh:
-                    base = json.loads(fh.read(MAX_MANIFEST_BYTES).decode())
-            except (OSError, ValueError):
+                    raw = fh.read(MAX_MANIFEST_BYTES + 1)
+                if len(raw) > MAX_MANIFEST_BYTES:
+                    raise ValueError
+                base = json.loads(raw.decode())
+            except (OSError, ValueError, RecursionError):
                 raise BenchmarkError("cannot read baseline") from None
             problems = compare(base, report)
             report["regressions"] = problems

@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 sys.path.insert(0, HERE)
 
-from security_reviewer import benchmark, cli, vuln_detectors  # noqa: E402
+from security_reviewer import advisories, benchmark, cli, vuln_detectors  # noqa: E402
 from test_vuln_detectors import (  # noqa: E402
     JOIN, JOIN_FIXED, JOIN_LOOKALIKES, JOIN_VULN, TAR, TAR_FIXED_HELPER,
     TAR_LOOKALIKES, TAR_VULN,
@@ -310,6 +310,120 @@ class TestRegression(BenchBase):
         with open(self.base, "w") as fh:
             fh.write("[]")
         self.assertEqual(self.bm("--baseline", self.base)[0], 2)
+
+    def test_broken_advisory_classifier_is_rejected(self):
+        self.write_baseline()
+        with mock.patch.object(advisories, "classify",
+                               return_value="affected"):
+            code, rep, _ = self.bm("--baseline", self.base,
+                                   "--deterministic")
+        self.assertEqual(code, 1)
+        joined = "\n".join(rep["regressions"])
+        self.assertIn("advisory_false_alarms", joined)
+        self.assertIn("flipped to in_range", joined)
+        self.assertIn("advisory status", joined)
+
+    def test_corroborated_tp_decrease_is_rejected(self):
+        self.write_baseline()
+        with mock.patch.object(advisories, "classify",
+                               return_value="patched"):
+            code, rep, _ = self.bm("--baseline", self.base,
+                                   "--deterministic")
+        self.assertEqual(code, 1)
+        self.assertIn("corroborated_tp", "\n".join(rep["regressions"]))
+
+    def test_tampered_baseline_overall_is_rejected(self):
+        self.write_baseline()
+        reduced = {k: v for k, v in vuln_detectors.DETECTORS.items()
+                   if k != TAR}
+        with mock.patch.dict(vuln_detectors.DETECTORS, reduced, clear=True):
+            self.bm("--deterministic", "--write-baseline", self.base)
+        doc = json.loads(self.read(self.base))
+        for sec in doc["modes"].values():
+            sec["overall"]["tp"] = 99  # claims better than the cases show
+        with open(self.base, "w") as fh:
+            json.dump(doc, fh)
+        code, rep, _ = self.bm("--baseline", self.base, "--deterministic")
+        self.assertEqual(code, 1)
+        self.assertIn("tampered", "\n".join(rep["regressions"]))
+        # lowering the baseline overall cannot hide a regression either
+        self.write_baseline()
+        doc = json.loads(self.read(self.base))
+        for sec in doc["modes"].values():
+            sec["overall"]["tp"] = 0
+        with open(self.base, "w") as fh:
+            json.dump(doc, fh)
+        self.assertEqual(self.bm("--baseline", self.base)[0], 1)
+
+    def test_malformed_baseline_structure_is_usage_error(self):
+        self.write_baseline()
+        good = json.loads(self.read(self.base))
+        for mutate in (
+                lambda d: d["modes"]["source-only"].update(cases=[]),
+                lambda d: d["modes"]["source-only"]["cases"].update(
+                    {"join-vuln": []}),
+                lambda d: d["modes"]["source-only"]["cases"]["join-vuln"]
+                .pop("role"),
+                lambda d: d["modes"]["source-only"]["cases"]["join-vuln"]
+                .update(expected=5),
+                lambda d: d["modes"]["source-only"]["cases"]["join-vuln"]
+                .update(tp="x"),
+                lambda d: d["modes"].update({"source-only": 7}),
+                lambda d: d["modes"]["advisory-assisted"]["advisory"]
+                .update(corroborated_tp=None)):
+            doc = copy.deepcopy(good)
+            mutate(doc)
+            with open(self.base, "w") as fh:
+                json.dump(doc, fh)
+            self.assertEqual(self.bm("--baseline", self.base)[0], 2)
+
+    def test_deeply_nested_json_is_usage_error(self):
+        self.write_baseline()
+        deep = "[" * 200000 + "]" * 200000
+        with open(self.base, "w") as fh:
+            fh.write(deep)
+        self.assertEqual(self.bm("--baseline", self.base)[0], 2)
+        with open(self.manifest_path, "w") as fh:
+            fh.write(deep)
+        self.assertEqual(self.bm()[0], 2)
+
+
+class TestPathSafety(BenchBase):
+    def test_dot_and_empty_segments_rejected(self):
+        for snap in (".", "snaps/./join-vuln", "snaps//join-vuln",
+                     "snaps/join-vuln/", ""):
+            bad = copy.deepcopy(self.cases)
+            bad[0]["snapshot"] = snap
+            self.write_manifest(bad)
+            self.assertEqual(self.bm()[0], 2, snap)
+
+    def test_snapshot_equal_to_root_rejected(self):
+        real = benchmark._snapshot_dir
+        case = dict(self.cases[0], snapshot="snaps/join-vuln")
+        with mock.patch.object(os.path, "realpath",
+                               side_effect=lambda p: os.path.abspath(self.root)):
+            with self.assertRaises(benchmark.BenchmarkError):
+                real(self.root, case)
+
+    def test_manifest_inside_snapshot_rejected(self):
+        inside = os.path.join(self.root, "snaps", "join-vuln", "m.json")
+        with open(inside, "w") as fh:
+            json.dump({"schema": 1, "cases": self.cases}, fh)
+        code, _, err = run("benchmark", inside, "--root", self.root)
+        self.assertEqual(code, 2)
+        self.assertIn("must not be inside a snapshot", err)
+
+    def test_baseline_and_output_inside_snapshot_rejected(self):
+        inside = os.path.join(self.root, "snaps", "tar-vuln", "b.json")
+        for flag in ("--baseline", "--write-baseline", "--output"):
+            self.assertEqual(self.bm(flag, inside)[0], 2, flag)
+            self.assertFalse(os.path.exists(inside), flag)
+
+    def test_symlinked_path_into_snapshot_rejected(self):
+        link = os.path.join(self.out, "lnk")
+        os.symlink(os.path.join(self.root, "snaps", "tar-vuln"), link)
+        self.assertEqual(self.bm("--write-baseline",
+                                 os.path.join(link, "b.json"))[0], 2)
 
 
 if __name__ == "__main__":
