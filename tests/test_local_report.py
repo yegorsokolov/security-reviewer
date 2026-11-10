@@ -190,6 +190,29 @@ class TestFaultInjection(Base):
         self.degraded(lambda r: " " * (lr.MAX_CONTENT_BYTES + 1),
                       "oversized_output")
 
+    def test_hostlike_output_is_unsafe(self):
+        for txt in ("visit evil.com/x now", "go to //evil.example.net/a",
+                    "see sub.evil.io", "use 10.1.2.3 instead",
+                    "docs at evil.dev", "text (//host/p)"):
+            def fn(r, txt=txt):
+                d = json.loads(answer(r))
+                d["items"][0]["fix_suggestion"] = txt
+                return json.dumps(d)
+            self.degraded(fn, "unsafe_output")
+
+    def test_ordinary_text_not_flagged(self):
+        txt = ("Move it out, e.g. read os.environ in config.py or "
+               "src/app/settings.py, install.sh and a/b//c are fine.")
+
+        def fn(r):
+            d = json.loads(answer(r))
+            d["items"][0]["fix_suggestion"] = txt
+            return json.dumps(d)
+        _, out, _ = self.review_with(Stub(fn))
+        ai = json.loads(out)["ai_report"]
+        self.assertEqual(ai["status"], "ok", ai)
+        self.assertEqual(ai["items"][0]["fix_suggestion"], txt)
+
     def test_client_errors(self):
         for code in ("timeout", "endpoint_refused", "unavailable",
                      "bad_http_status", "malformed_output"):
@@ -248,7 +271,10 @@ class TestNoFindingsAndUsage(Base):
         for flags in (["--ai-timeout", "0"], ["--ai-timeout", "nan"],
                       ["--ai-timeout", "-1"], ["--ai-timeout", "inf"],
                       ["--ai-num-ctx", "0"], ["--ai-max-tokens", "x"],
-                      ["--ai-model", "bad name;rm"]):
+                      ["--ai-model", "bad name;rm"],
+                      ["--ai-model", "cloud"], ["--ai-model", "x:cloud"],
+                      ["--ai-model", "gpt-oss:120b-cloud"],
+                      ["--ai-model", "x-cloud"]):
             code, _, _ = run("review", self.repo, "--ai-report", *flags)
             self.assertEqual(code, 2, flags)
 
@@ -283,6 +309,26 @@ class TestPayload(unittest.TestCase):
         self.assertLessEqual(
             len(prep.request["messages"][1]["content"]), lr.MAX_PAYLOAD_BYTES)
         self.assertEqual(len(prep.ids) + prep.not_summarised, 20)
+
+    def test_num_ctx_budget_shrinks_or_degrades(self):
+        fs = [mk(f"secret.r.{i:016x}", title="t" * 200,
+                 summaries=("s " * 100,) * 3) for i in range(20)]
+        big = lr.prepare(fs, num_ctx=lr.DEFAULT_NUM_CTX)
+        small = lr.prepare(fs, num_ctx=3000, max_tokens=1024)
+        self.assertLess(len(small.ids), len(big.ids))
+        self.assertEqual(len(small.ids) + small.not_summarised, 20)
+        for p, ctx in ((big, lr.DEFAULT_NUM_CTX), (small, 3000)):
+            self.assertLessEqual(
+                lr.estimate_tokens(
+                    json.loads(p.request["messages"][1]["content"])[
+                        "untrusted_findings"], 1024), ctx)
+        none = lr.prepare(fs, num_ctx=500)
+        self.assertIsNone(none.request)
+        self.assertEqual(none.reason, "context_too_small")
+        rep = lr.build_report(fs, Stub(), num_ctx=500)
+        self.assertEqual((rep["status"], rep["reason"]),
+                         ("degraded", "context_too_small"))
+        self.assertEqual(lr.DEFAULT_NUM_CTX, 8192)
 
     def test_request_shape(self):
         prep, _ = self.body([mk("secret.r.0000000000000001")],
@@ -488,15 +534,68 @@ class TestHttp(Base):
         code, doc = self.go(f"http://localhost:{s.port}")
         self.assertEqual(doc["ai_report"]["status"], "ok")
 
-    def test_digest_failure_is_nonfatal(self):
+    def tags_server(self, tags_obj, status=200):
         def h(hh, body):
             if hh.command == "GET":
-                return send_json(hh, {}, 500)
+                return send_json(hh, tags_obj, status)
             ollama(hh, body)
-        s = self.serve(h)
+        return self.serve(h)
+
+    def posts(self, s):
+        return [h for h in s.hits if h[0] == "POST"]
+
+    def test_tags_checked_before_chat(self):
+        s = self.serve(ollama)
+        self.go(s.url)
+        self.assertEqual([h[0] for h in s.hits], ["GET", "POST"])
+
+    def test_remote_host_refused(self):
+        for extra in ({"remote_host": "https://ollama.com"},
+                      {"remote_model": "gpt-oss:120b"}):
+            s = self.tags_server({"models": [dict(
+                {"name": "qwen3:4b", "digest": "ab" * 32}, **extra)]})
+            _, doc = self.go(s.url)
+            ai = doc["ai_report"]
+            self.assertEqual((ai["status"], ai["reason"]),
+                             ("degraded", "remote_model_refused"))
+            self.assertEqual(self.posts(s), [])
+
+    def test_cloud_named_listed_model_refused(self):
+        s = self.tags_server({"models": [
+            {"name": "x:480b-cloud", "digest": "ab" * 32}]})
+        with self.assertRaises(lr.ModelError) as cm:  # bypassing the CLI
+            lr.OllamaClient(s.url, 5)({"model": "x:480b-cloud"})
+        self.assertEqual(cm.exception.code, "remote_model_refused")
+        self.assertEqual(s.hits, [])
+        # model name valid for the CLI but entry named like a cloud model
+        s = self.tags_server({"models": [
+            {"name": "qwen3:4b", "model": "qwen3:cloud"}]})
         _, doc = self.go(s.url)
+        self.assertEqual(doc["ai_report"]["reason"], "remote_model_refused")
+        self.assertEqual(self.posts(s), [])
+
+    def test_absent_model(self):
+        s = self.tags_server({"models": [{"name": "other:1b"}]})
+        _, doc = self.go(s.url)
+        self.assertEqual(doc["ai_report"]["reason"], "model_unavailable")
+        self.assertEqual(self.posts(s), [])
+
+    def test_tags_failure_blocks_chat(self):
+        s = self.tags_server({}, 500)
+        _, doc = self.go(s.url)
+        self.assertEqual(doc["ai_report"]["reason"], "bad_http_status")
+        self.assertEqual(self.posts(s), [])
+        s = self.tags_server({"nomodels": 1})
+        _, doc = self.go(s.url)
+        self.assertEqual(doc["ai_report"]["reason"], "malformed_output")
+        self.assertEqual(self.posts(s), [])
+
+    def test_untagged_name_matches_latest(self):
+        s = self.tags_server({"models": [
+            {"name": "qwen3:latest", "digest": "cd" * 32}]})
+        _, doc = self.go(s.url, "--ai-model", "qwen3")
         self.assertEqual(doc["ai_report"]["status"], "ok")
-        self.assertNotIn("model_digest", doc["ai_report"])
+        self.assertEqual(doc["ai_report"]["model_digest"], "cd" * 32)
 
     def test_redirect_refused(self):
         target = self.serve(ollama)

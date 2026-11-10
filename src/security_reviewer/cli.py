@@ -59,6 +59,9 @@ _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}")
 def _model_name(text):
     if not _MODEL_RE.fullmatch(text):
         raise argparse.ArgumentTypeError("invalid model name")
+    if local_report.is_cloud_name(text):
+        raise argparse.ArgumentTypeError(
+            "cloud (remote) models are not allowed")
     return text
 
 

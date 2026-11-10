@@ -56,6 +56,22 @@ redirects are followed, no cookies), checks that the connected peer is
 loopback before sending anything, caps the response at 256 KiB and enforces
 `--ai-timeout` as a hard wall-clock deadline for the whole model step.
 
+## Local models only
+
+Ollama can transparently forward some models ("cloud" models) to a remote
+service, which would send the summary off the machine. Before any chat
+request the client therefore calls `GET /api/tags` (same overall deadline),
+requires the requested model to be listed, and refuses to send anything if
+the entry has a non-empty `remote_host` or `remote_model`, or the name ends
+in `-cloud` or has the tag `cloud`. `--ai-model` values that look like cloud
+models are a usage error (exit 2). Also disable cloud in the daemon itself,
+for example by starting it with `OLLAMA_NO_CLOUD=1`. The digest is taken from
+the same tags call.
+
+Payload size is budgeted against `--ai-num-ctx` (about 3 bytes per token for
+prompt, schema and data, plus `--ai-max-tokens`); findings that do not fit
+are dropped from the summary (counted in `not_summarised`).
+
 ## Options
 
 | Option | Default |
@@ -64,7 +80,7 @@ loopback before sending anything, caps the response at 256 KiB and enforces
 | `--ai-model NAME` | `qwen3:4b` |
 | `--ai-endpoint URL` | `http://127.0.0.1:11434` |
 | `--ai-timeout SECONDS` | `120` (positive number) |
-| `--ai-num-ctx N` | `4096` |
+| `--ai-num-ctx N` | `8192` |
 | `--ai-max-tokens N` | `1024` |
 
 Using any `--ai-*` option without `--ai-report` is a usage error (exit 2).
@@ -96,8 +112,11 @@ when degraded; `items` is then empty.
 | `malformed_output` | not strict JSON (duplicate keys, NaN), wrong shape, extra keys, truncated body, empty text |
 | `unknown_ids` / `duplicate_ids` / `missing_ids` | ids not exactly the supplied set |
 | `oversized_output` | response or text exceeds the caps (summary and fix 400 characters each) |
-| `unsafe_output` | credential-like text, or text echoing something redacted from the input |
+| `unsafe_output` | credential-like text, hostname-like or `//host` text, or text echoing something redacted from the input |
 | `payload_empty` | no finding could be put in a payload |
+| `context_too_small` | even one finding does not fit `--ai-num-ctx` together with the prompt, schema and `--ai-max-tokens` |
+| `remote_model_refused` | the model is a remote/cloud model (see below); no chat request was sent |
+| `model_unavailable` | the model is not listed by the server; no chat request was sent |
 
 Validation is all or nothing: invalid content is never partially repaired.
 Accepted text is further stripped of control/ANSI/bidi characters and

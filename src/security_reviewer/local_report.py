@@ -31,7 +31,7 @@ LABEL = "AI-generated, non-authoritative; scanner findings are authoritative"
 DEFAULT_MODEL = "qwen3:4b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 DEFAULT_TIMEOUT = 120.0
-DEFAULT_NUM_CTX = 4096
+DEFAULT_NUM_CTX = 8192
 DEFAULT_MAX_TOKENS = 1024
 
 STATUS_OK = "ok"
@@ -43,6 +43,7 @@ REASONS = frozenset({
     "endpoint_refused", "unavailable", "timeout", "bad_http_status",
     "malformed_output", "unknown_ids", "duplicate_ids", "missing_ids",
     "oversized_output", "unsafe_output", "payload_empty",
+    "remote_model_refused", "model_unavailable", "context_too_small",
 })
 
 MAX_FINDINGS = 20
@@ -81,6 +82,14 @@ class ModelError(Exception):
         assert code in REASONS, code
         self.code = code
         super().__init__(code)
+
+
+def is_cloud_name(name):
+    """Ollama cloud models are served remotely: refuse any such name."""
+    n = str(name).strip().lower()
+    tag = n.rsplit(":", 1)[1] if ":" in n else ""
+    return (n.endswith("-cloud") or tag == "cloud" or tag.endswith("-cloud")
+            or n == "cloud")
 
 
 class EndpointError(ValueError):
@@ -225,14 +234,29 @@ def output_schema(ids):
         "required": ["items"], "additionalProperties": False}
 
 
+BYTES_PER_TOKEN = 3     # conservative: JSON and ids tokenise densely
+CTX_OVERHEAD_TOKENS = 128  # chat template and framing
+
+
+def estimate_tokens(records, max_tokens):
+    """Conservative token need: prompt + schema + user data + output."""
+    ids = [r["id"] for r in records]
+    size = (len(SYSTEM_PROMPT.encode())
+            + len(json.dumps(output_schema(ids)).encode())
+            + len(_user_message(records).encode()))
+    return -(-size // BYTES_PER_TOKEN) + max_tokens + CTX_OVERHEAD_TOKENS
+
+
 class Prepared:
     """A built request plus bookkeeping needed to validate the answer."""
 
-    def __init__(self, request, ids, not_summarised, redacted):
+    def __init__(self, request, ids, not_summarised, redacted,
+                 reason="payload_empty"):
         self.request = request
         self.ids = ids
         self.not_summarised = not_summarised
         self.redacted = redacted
+        self.reason = reason  # why request is None
 
 
 def prepare(findings, *, model=DEFAULT_MODEL, num_ctx=DEFAULT_NUM_CTX,
@@ -243,18 +267,22 @@ def prepare(findings, *, model=DEFAULT_MODEL, num_ctx=DEFAULT_NUM_CTX,
     for idx, f in enumerate(findings):
         rec = _finding_record(f, seen)
         cands.append((_SEVERITY_RANK.get(f.severity.value, 9), idx, rec))
-    chosen = []
+    chosen, too_small = [], False
     for _, idx, rec in sorted(cands, key=lambda c: (c[0], c[1])):
         if rec is None or len(chosen) >= MAX_FINDINGS:
             continue
         trial = sorted(chosen + [(idx, rec)], key=lambda c: c[0])
-        if len(_user_message([r for _, r in trial]).encode()) \
-                > MAX_PAYLOAD_BYTES:
+        recs = [r for _, r in trial]
+        if len(_user_message(recs).encode()) > MAX_PAYLOAD_BYTES:
+            continue
+        if estimate_tokens(recs, max_tokens) > num_ctx:
+            too_small = True  # shrink: smaller findings may still fit
             continue
         chosen = trial
     not_summarised = len(findings) - len(chosen)
     if not chosen:
-        return Prepared(None, [], not_summarised, seen)
+        return Prepared(None, [], not_summarised, seen,
+                        "context_too_small" if too_small else "payload_empty")
     records = [r for _, r in chosen]
     ids = [r["id"] for r in records]
     request = {
@@ -289,6 +317,18 @@ def _reject_constant(name):
 def strict_json(text):
     return json.loads(text, object_pairs_hook=_no_dup_pairs,
                       parse_constant=_reject_constant)
+
+
+_TLDS = ("com|net|org|io|dev|app|ai|co|uk|de|ru|cn|info|biz|xyz|top|site|"
+         "online|cloud|me|us|eu|tk|gq|cf|ga|ly|to|ws|ru|su|fr|jp|br|nl")
+_HOST_RE = re.compile(
+    r"(?i)(?<![\w.-])(?:[a-z0-9-]+\.)+(?:" + _TLDS + r")(?![\w-])"
+    r"|(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])")
+_PROTO_REL_RE = re.compile(r"(?:^|[\s(\[<\"'=])//[^\s/]")
+
+
+def _hostlike(text):
+    return bool(_HOST_RE.search(text) or _PROTO_REL_RE.search(text))
 
 
 def _display(text):
@@ -339,6 +379,8 @@ def validate_output(raw, ids, redacted=()):
             row[k] = _display(it[k])
             if not row[k]:
                 raise ModelError("malformed_output")
+            if _hostlike(row[k]):
+                raise ModelError("unsafe_output")
         out.append(row)
     by_id = {r["id"]: r for r in out}
     return [by_id[i] for i in ids]
@@ -484,8 +526,38 @@ class OllamaClient(ModelClient):
                 timer.cancel()
             conn.close()
 
+    def _check_model_local(self, model, deadline):
+        """GET /api/tags first; the model must be listed and purely local."""
+        if is_cloud_name(model):
+            raise ModelError("remote_model_refused")
+        raw = self._exchange("GET", "/api/tags", None, deadline)
+        try:
+            data = strict_json(raw.decode("utf-8"))
+            models = data["models"]
+            if not isinstance(models, list):
+                raise TypeError
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise ModelError("malformed_output") from None
+        want = {model, model + ":latest" if ":" not in model else model}
+        entry = None
+        for m in models:
+            if isinstance(m, dict) and (m.get("name") in want
+                                        or m.get("model") in want):
+                entry = m
+                break
+        if entry is None:
+            raise ModelError("model_unavailable")
+        if (entry.get("remote_host") or entry.get("remote_model")
+                or is_cloud_name(entry.get("name") or "")
+                or is_cloud_name(entry.get("model") or "")):
+            raise ModelError("remote_model_refused")
+        d = entry.get("digest")
+        if isinstance(d, str) and re.fullmatch(r"[0-9a-f]{12,128}", d):
+            self.model_digest = d
+
     def __call__(self, request):
         deadline = time.monotonic() + self.timeout
+        self._check_model_local(request.get("model"), deadline)
         body = json.dumps(request, sort_keys=True).encode("utf-8")
         raw = self._exchange("POST", "/api/chat", body, deadline)
         try:
@@ -495,24 +567,7 @@ class OllamaClient(ModelClient):
             raise ModelError("malformed_output") from None
         if not isinstance(content, str):
             raise ModelError("malformed_output")
-        self._fetch_digest(request.get("model"), deadline)
         return content
-
-    def _fetch_digest(self, model, deadline):
-        """Best effort: record the model digest; never raises."""
-        try:
-            data = strict_json(
-                self._exchange("GET", "/api/tags", None, deadline)
-                .decode("utf-8"))
-            for m in data.get("models", []):
-                if m.get("name") == model or m.get("model") == model:
-                    d = m.get("digest")
-                    if isinstance(d, str) and re.fullmatch(r"[0-9a-f]{12,128}",
-                                                           d):
-                        self.model_digest = d
-                    return
-        except Exception:  # noqa: BLE001 - digest is optional
-            return
 
 
 # ---------------------------------------------------------------- report
@@ -536,7 +591,7 @@ def build_report(findings, client, *, model=DEFAULT_MODEL,
                                               "not_summarised": len(findings)})
     if prep.request is None:
         return _base(STATUS_DEGRADED, model, {
-            "reason": "payload_empty", "not_summarised": len(findings)})
+            "reason": prep.reason, "not_summarised": len(findings)})
     reason, items = None, []
     try:
         raw = client(prep.request)
