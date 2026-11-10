@@ -166,13 +166,73 @@ class TestFailures(Base):
                                os.path.join(self.tmp, "no", "dir", "o.json"))
         self.assertNotIn(AWS, err)
 
+    def check_unreadable(self, err):
+        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.assertNotIn(self.tmp, err)
+
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root")
     def test_unreadable_dir(self):
-        os.chmod(self.repo, 0)
-        self.addCleanup(os.chmod, self.repo, 0o700)
+        self.put(FIXTURES)
+        for mode in (0o000, 0o400):
+            os.chmod(self.repo, mode)
+            self.addCleanup(os.chmod, self.repo, 0o700)
+            err = self.check_usage("review", self.repo)
+            self.check_unreadable(err)
+            self.assertIn("cannot read PATH", err)
+        os.chmod(self.repo, 0o700)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root")
+    def test_partially_unreadable(self):
+        self.put(FIXTURES)
+        sub = os.path.join(self.repo, "sub")
+        os.mkdir(sub)
+        with open(os.path.join(sub, "x.txt"), "w") as fh:
+            fh.write("x\n")
+        os.chmod(sub, 0)
+        self.addCleanup(os.chmod, sub, 0o700)
         code, out, err = run("review", self.repo)
-        self.assertIn(code, (0, 2))
-        self.assertNotIn("Traceback", err)
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(json.loads(out)["stats"]["skipped_unreadable"], 1)
+
+    def test_bad_source_date_epoch(self):
+        self.put(FIXTURES)
+        old = os.environ.get("SOURCE_DATE_EPOCH")
+        self.addCleanup(lambda: os.environ.pop("SOURCE_DATE_EPOCH", None)
+                        if old is None else os.environ.update(
+                            SOURCE_DATE_EPOCH=old))
+        for bad in ("-1", "99999999999999", "abc"):
+            os.environ["SOURCE_DATE_EPOCH"] = bad
+            err = self.check_usage("review", self.repo)
+            self.assertIn("SOURCE_DATE_EPOCH", err)
+            # not needed when validation is skipped or timestamp is given
+            self.assertEqual(run("review", self.repo, "--no-validate")[0], 0)
+            self.assertEqual(run("review", self.repo, "--timestamp",
+                                 "2026-01-02T03:04:05Z")[0], 0)
+        os.environ["SOURCE_DATE_EPOCH"] = "253402300799"
+        doc = json.loads(run("review", self.repo)[1])
+        self.assertEqual(doc["findings"][0]["validation"]["validated_at"],
+                         "9999-12-31T23:59:59Z")
+
+    def test_broken_pipe(self):
+        self.put(FIXTURES)
+
+        class Broken:
+            def write(self, _):
+                raise BrokenPipeError
+
+            def flush(self):
+                pass
+
+        err = io.StringIO()
+        old = sys.stdout
+        sys.stdout = Broken()
+        try:
+            with redirect_stderr(err):
+                code = cli.main(["review", self.repo])
+        finally:
+            sys.stdout = old
+        self.assertEqual(code, 2)
+        self.assertEqual(err.getvalue(), "")
 
 
 class TestSubprocess(Base):

@@ -48,13 +48,22 @@ def _timestamp(text):
     return dt.replace(tzinfo=timezone.utc)
 
 
+_MAX_EPOCH = 253402300799  # 9999-12-31T23:59:59Z: keeps a 4-digit year
+
+
 def _default_clock():
+    """Clock from SOURCE_DATE_EPOCH, or None if it is set but invalid."""
     sde = os.environ.get("SOURCE_DATE_EPOCH", "")
-    try:
-        return datetime.fromtimestamp(int(sde), timezone.utc)
-    except (ValueError, OverflowError, OSError):
+    if not sde:
         return datetime.strptime(DEFAULT_TIMESTAMP, "%Y-%m-%dT%H:%M:%SZ"
                                  ).replace(tzinfo=timezone.utc)
+    try:
+        v = int(sde)
+        if not 0 <= v <= _MAX_EPOCH:
+            return None
+        return datetime.fromtimestamp(v, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def build_parser():
@@ -94,6 +103,14 @@ def _review(args):
     path = args.path
     if not os.path.isdir(path):
         return _fail("PATH is not an existing directory")
+    if not os.access(path, os.R_OK | os.X_OK):
+        return _fail("cannot read PATH")
+    default_now = None
+    if not args.no_validate and not args.timestamp:
+        default_now = _default_clock()
+        if default_now is None:
+            return _fail("SOURCE_DATE_EPOCH must be an integer between 0 "
+                         f"and {_MAX_EPOCH}")
     limits = {k: getattr(args, k) for k in _LIMITS
               if getattr(args, k) is not None}
     scanner = SecretScanner(**limits)
@@ -101,8 +118,13 @@ def _review(args):
         findings = list(scanner.scan(path))
     except (OSError, ValueError):
         return _fail("cannot read PATH")
+    st = scanner.stats
+    if st.skipped_unreadable and not st.entries_visited \
+            and not st.files_scanned:
+        return _fail("cannot read PATH")  # root could not be opened/listed
     if not args.no_validate:
-        clock = (lambda: args.timestamp) if args.timestamp else _default_clock
+        when = args.timestamp or default_now
+        clock = lambda: when  # noqa: E731
         validator = SecretValidator(clock=clock)
         reader = LocalContextReader(
             path, max_file_size=scanner.max_file_size)
@@ -129,7 +151,16 @@ def _review(args):
         except OSError:
             return _fail("cannot write --output file")
     else:
-        sys.stdout.write(text)
+        try:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            try:  # stop the interpreter's exit-time flush from failing too
+                os.dup2(os.open(os.devnull, os.O_WRONLY),
+                        sys.stdout.fileno())
+            except (OSError, ValueError, AttributeError):
+                pass
+            return EXIT_USAGE
     return EXIT_FINDINGS if (findings and args.fail_on_findings) else EXIT_OK
 
 

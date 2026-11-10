@@ -73,7 +73,13 @@ Two runs on the same input with the same options are byte-identical.
 | --- | --- |
 | 0 | Success (findings may exist unless `--fail-on-findings`). |
 | 1 | Findings present and `--fail-on-findings` given. |
-| 2 | Usage error, bad flag value, PATH missing/not a directory/unreadable, or unwritable `--output`. A one-line message goes to stderr, never file contents. |
+| 2 | Usage error, bad flag value, PATH missing/not a directory/not readable and searchable (message `cannot read PATH`), unwritable `--output`, invalid `SOURCE_DATE_EPOCH` (must be an integer 0 to 253402300799), or stdout closed early (broken pipe, silent). A one-line message goes to stderr, never file contents. |
+
+Partial unreadability is not an error: if PATH itself is readable but some
+files or subdirectories are not, they are skipped, counted in
+`stats.skipped_unreadable`, and the exit code is unaffected (0, or 1 with
+`--fail-on-findings` and findings). Check that counter when completeness
+matters.
 
 ## Reproducible review steps
 
