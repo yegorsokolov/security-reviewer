@@ -65,8 +65,13 @@ compares a declared version with a range and lists the result in
   tar rule, a guard whose condition merely calls a link-ish helper or the
   listed resolution calls counts, without proof it compares against the
   destination (false negative); the check position is by line number only.
-- Work caps: a function (about 3M node visits) or file (about 6M) that
+- Work caps: a function (about 3M node visits) or file (about 1.5M) that
   exceeds the analysis budget is skipped and counted in
   `coverage.detector_skipped`; analysis is otherwise linear in function size.
+  The per-file cap keeps a hostile 1 MiB source file to a few seconds, and
+  total scan time is bounded by the scanner's `max_total_bytes` limit because
+  each file's work is capped. The benchmark records `detector_skipped`,
+  `detector_errors` and `source_scan_caps_hit` per case and per mode, and a
+  baseline comparison treats an increase in any of them as a regression.
 - Two rules only. A clean report does not mean a repository is safe.
 - Findings are hypotheses; there is no exploit reproduction.

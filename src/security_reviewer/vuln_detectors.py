@@ -49,7 +49,7 @@ def language_of(path: str) -> str:
 #: function or file that exceeds them is skipped and counted under
 #: ``coverage["detector_skipped"]``; it is never an error.
 MAX_FUNCTION_WORK = 3_000_000
-MAX_FILE_WORK = 6_000_000
+MAX_FILE_WORK = 1_500_000
 
 
 class _OverBudget(Exception):
@@ -256,7 +256,7 @@ def _target_names(node):
 
 
 _RESOLVE_CALLS = {"startswith", "commonpath", "realpath", "is_relative_to",
-                  "relative_to", "getmember", "getnames", "getmembers"}
+                  "relative_to", "getmember", "getnames"}
 
 
 def _related_fn(own, helpers, work):
@@ -362,7 +362,7 @@ def _tar_function(fn, work, helpers):
         if not ex:
             continue
         ex_line = min(c.lineno for c in ex)
-        if related(b.test):
+        if guard_test(b.test):
             continue
         mine = body_ids[id(b)]
         if free_min is not None and free_min <= ex_line:

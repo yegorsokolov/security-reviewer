@@ -377,6 +377,54 @@ class TestRegression(BenchBase):
                 json.dump(doc, fh)
             self.assertEqual(self.bm("--baseline", self.base)[0], 2)
 
+    def test_missing_advisory_block_or_key_is_usage_error(self):
+        self.write_baseline()
+        good = json.loads(self.read(self.base))
+        adv = lambda d: d["modes"]["advisory-assisted"]  # noqa: E731
+        for mutate in (lambda d: adv(d).pop("advisory"),
+                       lambda d: adv(d)["advisory"].pop("corroborated_tp"),
+                       lambda d: adv(d)["advisory"].pop(
+                           "advisory_false_alarms"),
+                       lambda d: adv(d)["advisory"].pop("in_range_cases"),
+                       lambda d: adv(d).pop("detector_skipped"),
+                       lambda d: adv(d)["cases"]["join-vuln"].pop(
+                           "detector_errors")):
+            doc = copy.deepcopy(good)
+            mutate(doc)
+            with open(self.base, "w") as fh:
+                json.dump(doc, fh)
+            code, _, err = self.bm("--baseline", self.base)
+            self.assertEqual(code, 2)
+            self.assertIn("malformed baseline", err)
+
+    def test_report_and_baseline_carry_detector_health(self):
+        _, rep, _ = self.bm("--deterministic")
+        for sec in rep["modes"].values():
+            self.assertEqual((sec["detector_skipped"], sec["detector_errors"]),
+                             (0, 0))
+            c = sec["cases"]["tar-vuln"]
+            self.assertEqual((c["detector_skipped"], c["detector_errors"]),
+                             (0, 0))
+            self.assertIn("hit_file_cap", c["source_scan_caps_hit"])
+
+    def test_more_skipped_or_errors_is_a_regression(self):
+        self.write_baseline()
+        with mock.patch.object(vuln_detectors, "MAX_FUNCTION_WORK", 50):
+            code, rep, _ = self.bm("--baseline", self.base, "--deterministic")
+        self.assertEqual(code, 1)
+        joined = "\n".join(rep["regressions"])
+        self.assertIn("case tar-vuln: detector_skipped 0 -> ", joined)
+        self.assertGreater(rep["modes"]["source-only"]["detector_skipped"], 0)
+        # errors: same comparison path
+        doc = json.loads(self.read(self.base))
+        for sec in doc["modes"].values():
+            sec["cases"]["control"]["detector_errors"] = 0
+        rep["modes"]["source-only"]["cases"]["control"]["detector_errors"] = 1
+        from security_reviewer import benchmark
+        msgs = benchmark.compare(doc, rep)
+        self.assertTrue(any("control: detector_errors 0 -> 1" in m
+                            for m in msgs))
+
     def test_deeply_nested_json_is_usage_error(self):
         self.write_baseline()
         deep = "[" * 200000 + "]" * 200000

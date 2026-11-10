@@ -243,6 +243,33 @@ class TestHostileInputs(unittest.TestCase):
 
 
 class TestGuardHeuristics(unittest.TestCase):
+    def test_linkname_truthiness_in_branch_test_still_reports(self):
+        for test, body in (
+                ("m.issym() and m.linkname", "tf.extract(m, d)"),
+                ("m.issym()", "t = m.linkname\n   if t:\n    tf.extract(m, d)"),
+                ("m.linkname and tf.getmembers()", None)):
+            if body is None:
+                text = ("def f(tf, d):\n for m in tf:\n"
+                        "  if m.issym():\n"
+                        "   if m.linkname and tf.getmembers():\n"
+                        "    continue\n   tf.extract(m, d)\n")
+            else:
+                text = ("def f(tf, d):\n for m in tf:\n"
+                        f"  if {test}:\n   {body}\n")
+            self.assertEqual([r for r, _ in rules(text)], [TAR], text)
+        text = ("def f(tf, d):\n for m in tf:\n"
+                "  if m.issym() and m.linkname:\n   tf.extract(m, d)\n")
+        self.assertEqual([r for r, _ in rules(text)], [TAR])
+        text = ("def f(tf, d):\n for m in tf:\n  t = m.linkname\n"
+                "  if m.issym() and t:\n   tf.extract(m, d)\n")
+        self.assertEqual([r for r, _ in rules(text)], [TAR])
+
+    def test_strong_branch_test_still_skips(self):
+        text = ("def f(tf, d):\n for m in tf:\n"
+                "  if m.issym() and m.linkname.startswith('/'):\n"
+                "   raise E\n  elif m.issym():\n   pass\n")
+        self.assertEqual(rules(text), [])
+
     def test_truthiness_check_is_not_a_tar_guard(self):
         text = ("def f(a, d):\n for m in a:\n  if m.issym():\n"
                 "   if not m.linkname:\n    continue\n   a.extract(m, d)\n")

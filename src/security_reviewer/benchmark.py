@@ -171,6 +171,8 @@ def _mode_section(mode, cases, runs, deterministic):
     alarms = {"fixed": 0, "lookalike": 0, "control": 0}
     unsup = {"unparseable": 0, "unsupported_language": 0}
     out_cases, runtime = {}, 0
+    health = {"detector_skipped": 0, "detector_errors": 0}
+    caps = {}
     ad = {"cases_with_advisory": 0, "in_range_cases": 0,
           "advisory_only_detections": 0, "advisory_false_alarms": 0,
           "corroborated_tp": 0, "uncorroborated_tp": 0,
@@ -185,12 +187,19 @@ def _mode_section(mode, cases, runs, deterministic):
         for k in unsup:
             unsup[k] += cov["unsupported"][k]
         runtime += ms
+        for k in health:
+            health[k] += cov[k]
+        for k, v in cov["source_scan_caps_hit"].items():
+            caps[k] = caps.get(k, 0) + bool(v)
         entry = {"role": c["role"], "split": c["split"], **sc,
                  "findings": len(found),
                  "expected": sorted([e["rule"], e["path"], e["line"]]
                                     for e in c["expected"]),
                  "unsupported": dict(cov["unsupported"]),
                  "files_parsed": cov["files_parsed"],
+                 "detector_skipped": cov["detector_skipped"],
+                 "detector_errors": cov["detector_errors"],
+                 "source_scan_caps_hit": dict(cov["source_scan_caps_hit"]),
                  "found": [[f["rule"], f["path"], f["line"]]
                            for f in found[:50]]}
         if not deterministic:
@@ -222,6 +231,9 @@ def _mode_section(mode, cases, runs, deterministic):
                        "recall": _ratio(totals["tp"],
                                         totals["tp"] + totals["fn"])},
            "false_alarms_by_role": alarms, "unsupported": unsup,
+           "detector_skipped": health["detector_skipped"],
+           "detector_errors": health["detector_errors"],
+           "source_scan_caps_hit": dict(sorted(caps.items())),
            "cases": out_cases}
     if mode == "advisory-assisted":
         sec["advisory"] = ad
@@ -257,12 +269,19 @@ def baseline_of(report):
         cases = {}
         for cid, c in sec["cases"].items():
             cases[cid] = {"role": c["role"], "expected": c["expected"],
-                          "tp": c["tp"], "fp": c["fp"]}
+                          "tp": c["tp"], "fp": c["fp"],
+                          "detector_skipped": c["detector_skipped"],
+                          "detector_errors": c["detector_errors"],
+                          "source_scan_caps_hit": sorted(
+                              k for k, v in c["source_scan_caps_hit"].items()
+                              if v)}
             if "advisory" in c:
                 a = c["advisory"]
                 cases[cid]["advisory"] = None if a is None else {
                     "status": a["status"], "in_range": a["in_range"]}
         modes[m] = {"overall": {k: o[k] for k in ("tp", "fp", "fn")},
+                    "detector_skipped": sec["detector_skipped"],
+                    "detector_errors": sec["detector_errors"],
                     "cases": cases}
         if "advisory" in sec:
             modes[m]["advisory"] = dict(sec["advisory"])
@@ -278,14 +297,16 @@ def _pr(o):
             _frac(o["tp"], o["tp"] + o["fn"]))
 
 
-_AD_KEYS = ("advisory_false_alarms", "corroborated_tp")
+_AD_KEYS = ("cases_with_advisory", "in_range_cases",
+            "advisory_only_detections", "advisory_false_alarms",
+            "corroborated_tp", "uncorroborated_tp", "corroborated_fp")
 
 
 def _is_count(v):
     return type(v) is int and v >= 0
 
 
-def _check_base_mode(base):
+def _check_base_mode(base, mode):
     """Validate one baseline mode section; return (cases, overall)."""
     try:
         cases, overall = base["cases"], base["overall"]
@@ -297,17 +318,27 @@ def _check_base_mode(base):
                 and isinstance(c["expected"], list) \
                 and all(isinstance(e, list) for e in c["expected"]) \
                 and _is_count(c["tp"]) and _is_count(c["fp"]) \
+                and _is_count(c["detector_skipped"]) \
+                and _is_count(c["detector_errors"]) \
+                and isinstance(c["source_scan_caps_hit"], list) \
+                and all(isinstance(x, str)
+                        for x in c["source_scan_caps_hit"]) \
                 and ("advisory" not in c or c["advisory"] is None
                      or (isinstance(c["advisory"], dict)
                          and isinstance(c["advisory"].get("status"), str)
                          and isinstance(c["advisory"].get("in_range"), bool)))
         ad = base.get("advisory")
-        ok = ok and (ad is None or (isinstance(ad, dict) and all(
-            _is_count(ad.get(k)) for k in _AD_KEYS)))
+        ok = ok and _is_count(base["detector_skipped"]) \
+            and _is_count(base["detector_errors"])
+        if mode == "advisory-assisted":  # the block is required here
+            ok = ok and isinstance(ad, dict) and all(
+                _is_count(ad.get(k)) for k in _AD_KEYS)
+        else:
+            ok = ok and ad is None
     except (KeyError, TypeError, AttributeError):
         ok = False
     if not ok:
-        raise BenchmarkError("invalid baseline file")
+        raise BenchmarkError("malformed baseline")
     return cases, overall
 
 
@@ -322,7 +353,7 @@ def compare(baseline, report):
     """List of regression messages (empty if none). Zero tolerance."""
     if not isinstance(baseline, dict) or baseline.get("schema_version") != 1 \
             or not isinstance(baseline.get("modes"), dict):
-        raise BenchmarkError("invalid baseline file")
+        raise BenchmarkError("malformed baseline")
     if baseline.get("split") != report["split"]:
         raise BenchmarkError("baseline was written for split "
                              f"{baseline.get('split')!r}, not "
@@ -333,8 +364,8 @@ def compare(baseline, report):
         if base is None:
             raise BenchmarkError(f"baseline has no scores for mode {m!r}")
         if not isinstance(base, dict):
-            raise BenchmarkError("invalid baseline file")
-        bcases, boverall = _check_base_mode(base)
+            raise BenchmarkError("malformed baseline")
+        bcases, boverall = _check_base_mode(base, m)
         # Totals must agree with the per-case numbers on both sides; the
         # (stricter) per-case sums are what is compared.
         bsum = _sums(bcases)
@@ -376,6 +407,14 @@ def compare(baseline, report):
                            f"changed: {missing}")
             if c["tp"] < b["tp"]:
                 out.append(f"[{m}] case {cid}: TP {b['tp']} -> {c['tp']}")
+            for k in ("detector_skipped", "detector_errors"):
+                if c[k] > b[k]:
+                    out.append(f"[{m}] case {cid}: {k} {b[k]} -> {c[k]}")
+            newcaps = sorted(k for k, v in c["source_scan_caps_hit"].items()
+                             if v and k not in b["source_scan_caps_hit"])
+            if newcaps:
+                out.append(f"[{m}] case {cid}: scan caps newly hit: "
+                           f"{newcaps}")
             if b["role"] != "vulnerable" and c["fp"] > b["fp"]:
                 out.append(f"[{m}] case {cid}: false positives "
                            f"{b['fp']} -> {c['fp']} on a {b['role']} case")
