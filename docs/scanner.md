@@ -110,7 +110,7 @@ secret-in-file-name check (one shared constant).
 
 A value is ignored only if the whole value is a placeholder. The exact shapes
 are: `<name>`, `${NAME}`, `{{name}}`, `%NAME%` (identifier-like contents
-only), `$VAR` with an all-upper-case env-style name (so all-uppercase `$VAR`
+only), `%(name)s` (printf-style format placeholder, `s`, `d` or `r`), `$VAR` with an all-upper-case env-style name (so all-uppercase `$VAR`
 values are treated as placeholders and not reported, while `$uperS3cret` is
 reported), a value made only of `x`, `X`, `*`, `#`, `.`, `_` or `-`
 characters, a single repeated character, or only placeholder words such as

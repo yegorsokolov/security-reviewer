@@ -263,7 +263,8 @@ class TestStaticOnly(unittest.TestCase):
                   "ftplib", "smtplib", "importlib", "runpy", "ctypes",
                   "multiprocessing", "pickle", "eval(", "exec(", "os.system",
                   "__import__")
-        for name in ("cli.py", "__main__.py", "secret_scanner.py"):
+        for name in ("cli.py", "__main__.py", "secret_scanner.py", "review.py",
+                     "vuln_detectors.py", "advisories.py", "benchmark.py"):
             with open(os.path.join(SRC, "security_reviewer", name)) as fh:
                 src = fh.read()
             for tok in banned:

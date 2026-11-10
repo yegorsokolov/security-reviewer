@@ -43,6 +43,7 @@ _PLACEHOLDER_TOKENS = frozenset({
 _PLACEHOLDER_SHAPES = re.compile(
     r"<[A-Za-z][A-Za-z0-9_-]*>|\$\{[A-Za-z_][A-Za-z0-9_]*\}"
     r"|\{\{[A-Za-z_][A-Za-z0-9_.-]*\}\}|%[A-Za-z_][A-Za-z0-9_]*%"
+    r"|%\([A-Za-z_][A-Za-z0-9_]*\)[sdr]"
     r"|\$[A-Z_][A-Z0-9_]*|[xX*#._-]+")
 
 

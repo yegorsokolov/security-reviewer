@@ -91,6 +91,13 @@ class ScannerTest(unittest.TestCase):
         write(self.root, "a.py", "\n".join(lines) + "\n")
         self.assertEqual(self.scan(), [])
 
+    def test_percent_format_placeholders_ignored(self):
+        write(self.root, "a.py", 'SECRET = "%(secret)s"\n'
+              'password = "%(db_password)s"\n')
+        self.assertEqual(self.scan(), [])
+        write(self.root, "b.py", 'password = "%(x)sRealValue99"\n')
+        self.assertEqual(len(self.scan()), 1)
+
     def test_real_values_with_placeholder_substrings_detected(self):
         vals = ["Zx9!realSecretValue42", "P@ssword2024!", "myExampleTodoKey77",
                 "yourCompanyProd#9921"]

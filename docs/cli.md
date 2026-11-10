@@ -1,7 +1,9 @@
 # Command-line interface
 
-`security-reviewer` runs the local `SecretScanner` and `SecretValidator`
-against a checkout directory and prints one redacted JSON report. It is
+`security-reviewer review` runs the local `SecretScanner`, `SecretValidator`
+and the source-based `VulnScanner` (see [detectors.md](detectors.md))
+against a checkout directory and prints one redacted JSON report. The
+`benchmark` subcommand is described in [benchmark.md](benchmark.md). It is
 static and defensive only: files are read as data, never executed, and no
 live credential testing is performed.
 
@@ -40,6 +42,10 @@ security-reviewer review PATH
 
 | Option | Meaning |
 | --- | --- |
+| `--no-vuln` | Do not run the source vulnerability detectors. |
+| `--no-secrets` | Do not run the secret scanner (not both at once). |
+| `--advisories FILE` | Local JSON list of advisories (`id`, `package`, `affected`, optional `fixed`, `cwe`); see below. |
+| `--package NAME=VERSION` | Declared package version to match against `--advisories`; repeatable. |
 | `--no-validate` | Skip the validator; findings stay `hypothesis`. |
 | `--output FILE` | Write the report to FILE instead of stdout. |
 | `--fail-on-findings` | Exit 1 if any finding is reported. |
@@ -61,9 +67,23 @@ A single JSON object (sorted keys, 2-space indent, ASCII, trailing newline):
   paths are never leaked.
 - `validated`: whether the validator ran.
 - `findings`: `Finding.to_dict()` objects sorted by path, line, column, id.
+- `findings` hold secret (`secret.<rule>.<hash>`) and vulnerability
+  (`vuln.<rule>.<hash>`) findings together, told apart by rule id.
+- `coverage`: `rules_run` (`secret` and `vulnerability` rule ids),
+  `source_detectors_ran`, `files_seen` (per language), `files_parsed`, and
+  `unsupported` (`unparseable` Python files, `unsupported_language` files).
+  A clean result means "nothing found in what was analysed"; check it.
+- `advisory_matches`: always present, separate from `findings`. One record
+  per (advisory, `--package`) pair whose package names match (PEP 503
+  normalised), with `status` `affected`, `patched` or `not_affected`.
+  It never adds, removes or changes a finding or exit code.
 - `stats`: scanner counters (files scanned, skip counts, cap flags). Skip
   sample paths are omitted.
 - `limits`: the effective scanner limits.
+
+Advisory ranges use `<=`, `<`, `>=`, `>`, `==`, `!=` joined by commas (AND),
+over a PEP 440-style version order (pre, post, dev, epoch; local part
+ignored). A malformed advisory file, range or `--package` is a usage error.
 
 Two runs on the same input with the same options are byte-identical.
 

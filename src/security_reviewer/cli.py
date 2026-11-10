@@ -5,14 +5,14 @@ directory and prints one deterministic, redacted JSON document. It reads
 files as data only: nothing is executed, imported or sent anywhere.
 """
 import argparse
-import dataclasses
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-from . import SCHEMA_VERSION
-from .secret_scanner import LocalContextReader, SecretScanner, SecretValidator
+from . import SCHEMA_VERSION, advisories, benchmark
+from .review import LIMITS, ReviewError, scan_tree
+from .secret_scanner import SecretValidator
 
 TOOL = "security-reviewer"
 #: Fixed validation timestamp used when neither --timestamp nor
@@ -20,8 +20,7 @@ TOOL = "security-reviewer"
 DEFAULT_TIMESTAMP = "1970-01-01T00:00:00Z"
 EXIT_OK, EXIT_FINDINGS, EXIT_USAGE = 0, 1, 2
 
-_LIMITS = ("max_file_size", "max_files", "max_total_bytes", "max_findings",
-           "max_line_length", "max_entries", "max_depth")
+_LIMITS = LIMITS
 
 
 class _Parser(argparse.ArgumentParser):
@@ -68,12 +67,24 @@ def _default_clock():
 
 def build_parser():
     p = _Parser(prog="security-reviewer",
-                description="Offline static review for hardcoded secrets.")
+                description="Offline static review: secrets and source vulnerabilities.")
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
     r = sub.add_parser("review", help="scan a local checkout directory")
     r.add_argument("path", metavar="PATH", help="directory to scan")
     r.add_argument("--no-validate", action="store_true",
                    help="skip the validator; findings stay 'hypothesis'")
+    r.add_argument("--no-secrets", action="store_true",
+                   help="do not run the secret scanner")
+    r.add_argument("--no-vuln", action="store_true",
+                   help="do not run the source vulnerability detectors")
+    r.add_argument("--advisories", metavar="FILE",
+                   help="local JSON list of advisories (id, package, "
+                        "affected, fixed, cwe); matches are reported "
+                        "separately from findings")
+    r.add_argument("--package", action="append", default=[],
+                   metavar="NAME=VERSION",
+                   help="declared package version to match against "
+                        "--advisories (repeatable)")
     r.add_argument("--output", metavar="FILE",
                    help="write the JSON report to FILE instead of stdout")
     r.add_argument("--fail-on-findings", action="store_true",
@@ -85,13 +96,8 @@ def build_parser():
         r.add_argument("--" + name.replace("_", "-"), dest=name,
                        type=_positive, metavar="N",
                        help="scanner limit (default: scanner default)")
+    benchmark.add_arguments(sub)
     return p
-
-
-def _sort_key(f):
-    loc = f.locations[0] if f.locations else None
-    return (loc.path if loc else "", loc.start_line if loc else 0,
-            (loc.start_column or 0) if loc else 0, f.id)
 
 
 def _fail(msg):
@@ -111,27 +117,27 @@ def _review(args):
         if default_now is None:
             return _fail("SOURCE_DATE_EPOCH must be an integer between 0 "
                          f"and {_MAX_EPOCH}")
+    if args.no_secrets and args.no_vuln:
+        return _fail("--no-secrets and --no-vuln leave nothing to run")
+    try:
+        packages = [advisories.parse_package_spec(p) for p in args.package]
+        advs = advisories.load_advisories(args.advisories) \
+            if args.advisories else []
+    except advisories.AdvisoryError as exc:
+        return _fail(str(exc))
     limits = {k: getattr(args, k) for k in _LIMITS
               if getattr(args, k) is not None}
-    scanner = SecretScanner(**limits)
-    try:
-        findings = list(scanner.scan(path))
-    except (OSError, ValueError):
-        return _fail("cannot read PATH")
-    st = scanner.stats
-    if st.skipped_unreadable and not st.entries_visited \
-            and not st.files_scanned:
-        return _fail("cannot read PATH")  # root could not be opened/listed
+    validator = None
     if not args.no_validate:
         when = args.timestamp or default_now
-        clock = lambda: when  # noqa: E731
-        validator = SecretValidator(clock=clock)
-        reader = LocalContextReader(
-            path, max_file_size=scanner.max_file_size)
-        findings = [validator.validate(f, reader) or f for f in findings]
-    findings.sort(key=_sort_key)
-    stats = dataclasses.asdict(scanner.stats)
-    stats.pop("skip_samples", None)  # may contain paths
+        validator = SecretValidator(clock=lambda: when)
+    try:
+        res = scan_tree(path, secrets=not args.no_secrets,
+                        vuln=not args.no_vuln, limits=limits,
+                        validator=validator)
+    except ReviewError:
+        return _fail("cannot read PATH")
+    findings = res.findings
     report = {
         "schema_version": 1,
         "finding_schema_version": SCHEMA_VERSION,
@@ -139,8 +145,10 @@ def _review(args):
         "root": ".",
         "validated": not args.no_validate,
         "findings": [f.to_dict() for f in findings],
-        "stats": stats,
-        "limits": {k: getattr(scanner, k) for k in _LIMITS},
+        "advisory_matches": advisories.match_advisories(advs, packages),
+        "coverage": res.coverage,
+        "stats": res.stats,
+        "limits": res.limits,
     }
     text = json.dumps(report, sort_keys=True, indent=2,
                       ensure_ascii=True) + "\n"
@@ -166,4 +174,6 @@ def _review(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "benchmark":
+        return benchmark.run(args)
     return _review(args)
