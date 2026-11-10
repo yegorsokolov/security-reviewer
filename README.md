@@ -13,3 +13,11 @@ for finding in SecretScanner().scan("path/to/checkout"):
 See [docs/scanner.md](docs/scanner.md) for the `Scanner`/`Validator`
 interfaces, rules and safety limits, and
 [docs/finding-format.md](docs/finding-format.md) for the finding format.
+
+## Command line
+
+```
+PYTHONPATH=src python3 -m security_reviewer review PATH
+```
+
+Offline, deterministic JSON output; see [docs/cli.md](docs/cli.md).

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "security-reviewer"
+version = "0.1.0"
+description = "Offline defensive review CLI for hardcoded secrets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+security-reviewer = "security_reviewer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
