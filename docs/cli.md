@@ -9,8 +9,10 @@ live credential testing is performed.
 
 ## Offline and data flow
 
-Nothing is sent to any model provider or network. The CLI uses only the
-Python standard library, opens no sockets, and spawns no processes. Secret
+By default nothing is sent to any model provider or network. The CLI uses
+only the Python standard library, opens no sockets, and spawns no processes.
+The only exception is the explicit opt-in `--ai-report`, which talks to a
+model on a loopback address; see [local-report.md](local-report.md). Secret
 values are redacted by the scanner before they reach any output.
 
 ```mermaid
@@ -50,6 +52,8 @@ security-reviewer review PATH
 | `--output FILE` | Write the report to FILE instead of stdout. |
 | `--fail-on-findings` | Exit 1 if any finding is reported. |
 | `--timestamp ISO` | `validated_at` value, e.g. `2026-01-02T03:04:05Z`. |
+| `--ai-report` | Opt in to a local-model summary in a top-level `ai_report` key (loopback Ollama only); see [local-report.md](local-report.md). |
+| `--ai-model`, `--ai-endpoint`, `--ai-timeout`, `--ai-num-ctx`, `--ai-max-tokens` | Settings for `--ai-report` (defaults `qwen3:4b`, `http://127.0.0.1:11434`, 120, 4096, 1024); usage error without `--ai-report`. |
 | `--max-file-size`, `--max-files`, `--max-total-bytes`, `--max-findings`, `--max-line-length`, `--max-entries`, `--max-depth` | Scanner limits (positive integers). |
 
 The validation timestamp is deterministic: `--timestamp` if given, else
@@ -85,6 +89,8 @@ A single JSON object (sorted keys, 2-space indent, ASCII, trailing newline):
   per (advisory, `--package`) pair whose package names match (PEP 503
   normalised), with `status` `affected`, `patched` or `not_affected`.
   It never adds, removes or changes a finding or exit code.
+- `ai_report`: present only with `--ai-report`; non-authoritative, never
+  affects findings or the exit code (see [local-report.md](local-report.md)).
 - `stats`: scanner counters (files scanned, skip counts, cap flags). Skip
   sample paths are omitted.
 - `limits`: the effective scanner limits.
@@ -101,7 +107,7 @@ Two runs on the same input with the same options are byte-identical.
 | --- | --- |
 | 0 | Success (findings may exist unless `--fail-on-findings`). |
 | 1 | Findings present and `--fail-on-findings` given. |
-| 2 | Usage error, bad flag value, PATH missing/not a directory/not readable and searchable (message `cannot read PATH`), unwritable `--output`, invalid `SOURCE_DATE_EPOCH` (must be an integer 0 to 253402300799), or stdout closed early (broken pipe, silent). A one-line message goes to stderr, never file contents. |
+| 2 | Usage error, bad flag value, PATH missing/not a directory/not readable and searchable (message `cannot read PATH`), unwritable `--output`, `--ai-*` without `--ai-report` or an endpoint that is not a loopback `http` URL, invalid `SOURCE_DATE_EPOCH` (must be an integer 0 to 253402300799), or stdout closed early (broken pipe, silent). A one-line message goes to stderr, never file contents. |
 
 Partial unreadability is not an error: if PATH itself is readable but some
 files or subdirectories are not, they are skipped, counted in

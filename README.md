@@ -20,7 +20,10 @@ interfaces, rules and safety limits, and
 PYTHONPATH=src python3 -m security_reviewer review PATH
 ```
 
-Offline, deterministic JSON output; see [docs/cli.md](docs/cli.md).
+Offline, deterministic JSON output; see [docs/cli.md](docs/cli.md). By
+default no network is used. `--ai-report` is an explicit opt-in that sends a
+sanitised, bounded summary to a model on a loopback address and adds a
+non-authoritative `ai_report`; see [docs/local-report.md](docs/local-report.md).
 
 ## Source vulnerability detectors and benchmark
 

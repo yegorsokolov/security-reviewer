@@ -2,15 +2,19 @@
 
 Runs the local SecretScanner (and optionally SecretValidator) over a
 directory and prints one deterministic, redacted JSON document. It reads
-files as data only: nothing is executed, imported or sent anywhere.
+files as data only: nothing is executed or imported. By default nothing is
+sent anywhere; ``--ai-report`` is an explicit opt-in to a loopback-only local
+model (see local_report.py).
 """
 import argparse
 import json
+import math
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
-from . import SCHEMA_VERSION, advisories, benchmark
+from . import SCHEMA_VERSION, advisories, benchmark, local_report
 from .review import LIMITS, ReviewError, scan_tree
 from .secret_scanner import SecretValidator
 
@@ -37,6 +41,29 @@ def _positive(text):
     if v < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return v
+
+
+def _positive_seconds(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    if not math.isfinite(v) or v <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return v
+
+
+_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}")
+
+
+def _model_name(text):
+    if not _MODEL_RE.fullmatch(text):
+        raise argparse.ArgumentTypeError("invalid model name")
+    return text
+
+
+_AI_OPTS = ("ai_model", "ai_endpoint", "ai_timeout", "ai_num_ctx",
+            "ai_max_tokens")
 
 
 def _timestamp(text):
@@ -92,6 +119,25 @@ def build_parser():
     r.add_argument("--timestamp", type=_timestamp, metavar="ISO8601Z",
                    help="validated_at value (default: SOURCE_DATE_EPOCH or a "
                         "fixed epoch placeholder, for reproducible output)")
+    r.add_argument("--ai-report", action="store_true",
+                   help="opt in: send a bounded, sanitised summary of the "
+                        "findings to a LOCAL model (loopback Ollama) and add "
+                        "a non-authoritative top-level ai_report")
+    r.add_argument("--ai-model", type=_model_name, metavar="NAME",
+                   help="model name (default: "
+                        f"{local_report.DEFAULT_MODEL})")
+    r.add_argument("--ai-endpoint", metavar="URL",
+                   help="loopback http URL (default: "
+                        f"{local_report.DEFAULT_ENDPOINT})")
+    r.add_argument("--ai-timeout", type=_positive_seconds, metavar="SECONDS",
+                   help="hard overall deadline for the model step (default: "
+                        f"{local_report.DEFAULT_TIMEOUT:g})")
+    r.add_argument("--ai-num-ctx", type=_positive, metavar="N",
+                   help="model context size (default: "
+                        f"{local_report.DEFAULT_NUM_CTX})")
+    r.add_argument("--ai-max-tokens", type=_positive, metavar="N",
+                   help="max generated tokens (default: "
+                        f"{local_report.DEFAULT_MAX_TOKENS})")
     for name in _LIMITS:
         r.add_argument("--" + name.replace("_", "-"), dest=name,
                        type=_positive, metavar="N",
@@ -127,6 +173,17 @@ def _review(args):
             if args.advisories else []
     except advisories.AdvisoryError as exc:
         return _fail(str(exc))
+    ai_client = None
+    if not args.ai_report:
+        if any(getattr(args, k) is not None for k in _AI_OPTS):
+            return _fail("--ai-* options require --ai-report")
+    else:
+        try:  # refuse an unsafe endpoint before scanning or building payloads
+            ai_client = local_report.OllamaClient(
+                args.ai_endpoint or local_report.DEFAULT_ENDPOINT,
+                args.ai_timeout or local_report.DEFAULT_TIMEOUT)
+        except local_report.EndpointError as exc:
+            return _fail(f"--ai-endpoint: {exc}")
     limits = {k: getattr(args, k) for k in _LIMITS
               if getattr(args, k) is not None}
     validator = None
@@ -152,6 +209,12 @@ def _review(args):
         "stats": res.stats,
         "limits": res.limits,
     }
+    if ai_client is not None:
+        report["ai_report"] = local_report.build_report(
+            findings, ai_client,
+            model=args.ai_model or local_report.DEFAULT_MODEL,
+            num_ctx=args.ai_num_ctx or local_report.DEFAULT_NUM_CTX,
+            max_tokens=args.ai_max_tokens or local_report.DEFAULT_MAX_TOKENS)
     text = json.dumps(report, sort_keys=True, indent=2,
                       ensure_ascii=True) + "\n"
     if args.output:
