@@ -324,8 +324,8 @@ def strict_json(text):
 
 _TLDS = ("com|net|org|io|dev|app|ai|co|uk|de|ru|cn|info|biz|xyz|top|site|"
          "online|cloud|me|us|eu|tk|gq|cf|ga|ly|to|ws|ru|su|fr|jp|br|nl|"
-         "ca|au|se|ch|cz|dk|fi|ie|gr|il|kr|tw|hk|sg|za|mx|tr|ua|vn|th|"
-         "ir|pw|tv|fm|gg|club|shop|website|mobi|asia|onion|internal|lan|"
+         "ca|au|cz|dk|ie|gr|il|kr|tw|hk|sg|za|mx|ua|vn|"
+         "ir|tv|fm|gg|club|shop|website|mobi|asia|onion|internal|lan|"
          "localhost")
 _HOST_RE = re.compile(
     r"(?i)(?<![\w.-])(?:[a-z0-9-]+\.)+(?:" + _TLDS + r")(?![\w-])"

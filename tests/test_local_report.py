@@ -201,6 +201,12 @@ class TestFaultInjection(Base):
                 return json.dumps(d)
             self.degraded(fn, "unsafe_output")
 
+    def test_code_idioms_not_hostlike(self):
+        for t in ("threading.local()", "button.click()", "model.pt",
+                  "self.store", "response.stream", "args.pw", "self.ch",
+                  "s.tr", "cfg.th", "self.se", "x.fi", "Makefile.pro"):
+            self.assertFalse(lr._hostlike(t), t)
+
     def test_ordinary_text_not_flagged(self):
         txt = ("Move it out, e.g. read os.environ in config.py or "
                "src/app/settings.py, install.sh and a/b//c are fine.")
