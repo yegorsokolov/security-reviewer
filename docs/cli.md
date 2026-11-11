@@ -53,7 +53,7 @@ security-reviewer review PATH
 | `--fail-on-findings` | Exit 1 if any finding is reported. |
 | `--timestamp ISO` | `validated_at` value, e.g. `2026-01-02T03:04:05Z`. |
 | `--ai-report` | Opt in to a local-model summary in a top-level `ai_report` key (loopback Ollama only); see [local-report.md](local-report.md). |
-| `--ai-model`, `--ai-endpoint`, `--ai-timeout`, `--ai-num-ctx`, `--ai-max-tokens` | Settings for `--ai-report` (defaults `qwen3:4b`, `http://127.0.0.1:11434`, 120, 4096, 1024); usage error without `--ai-report`. |
+| `--ai-model`, `--ai-endpoint`, `--ai-timeout`, `--ai-num-ctx`, `--ai-max-tokens` | Settings for `--ai-report` (defaults `qwen3:4b`, `http://127.0.0.1:11434`, 120, 8192, 1024); usage error without `--ai-report`. |
 | `--max-file-size`, `--max-files`, `--max-total-bytes`, `--max-findings`, `--max-line-length`, `--max-entries`, `--max-depth` | Scanner limits (positive integers). |
 
 The validation timestamp is deterministic: `--timestamp` if given, else

@@ -62,11 +62,16 @@ Ollama can transparently forward some models ("cloud" models) to a remote
 service, which would send the summary off the machine. Before any chat
 request the client therefore calls `GET /api/tags` (same overall deadline),
 requires the requested model to be listed, and refuses to send anything if
-the entry has a non-empty `remote_host` or `remote_model`, or the name ends
-in `-cloud` or has the tag `cloud`. `--ai-model` values that look like cloud
+the entry has a non-empty `remote_host` or `remote_model`, or the name
+contains `cloud` as a whole word (for example `-cloud`, `:cloud`). `--ai-model` values that look like cloud
 models are a usage error (exit 2). Also disable cloud in the daemon itself,
 for example by starting it with `OLLAMA_NO_CLOUD=1`. The digest is taken from
 the same tags call.
+
+Known limit (time-of-check/time-of-use): the tags check and the chat request
+are separate HTTP requests, so a local process that can change the daemon's
+models between them could swap the model. The loopback-only peer check and
+`OLLAMA_NO_CLOUD=1` remain the primary controls; treat the daemon as trusted.
 
 Payload size is budgeted against `--ai-num-ctx` (about 3 bytes per token for
 prompt, schema and data, plus `--ai-max-tokens`); findings that do not fit

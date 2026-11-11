@@ -84,12 +84,15 @@ class ModelError(Exception):
         super().__init__(code)
 
 
+# "cloud" as a whole word anywhere in the name or tag (``x-cloud``,
+# ``x:cloud``, ``x:1t-cloud``, ``x:cloud-y``, ``x_cloud``, ``cloud/x``).
+_CLOUD_RE = re.compile(r"(?<![a-z0-9])cloud(?![a-z0-9])")
+
+
 def is_cloud_name(name):
     """Ollama cloud models are served remotely: refuse any such name."""
-    n = str(name).strip().lower()
-    tag = n.rsplit(":", 1)[1] if ":" in n else ""
-    return (n.endswith("-cloud") or tag == "cloud" or tag.endswith("-cloud")
-            or n == "cloud")
+    n = unicodedata.normalize("NFKC", str(name)).strip().lower()
+    return bool(_CLOUD_RE.search(n))
 
 
 class EndpointError(ValueError):
@@ -320,7 +323,11 @@ def strict_json(text):
 
 
 _TLDS = ("com|net|org|io|dev|app|ai|co|uk|de|ru|cn|info|biz|xyz|top|site|"
-         "online|cloud|me|us|eu|tk|gq|cf|ga|ly|to|ws|ru|su|fr|jp|br|nl")
+         "online|cloud|me|us|eu|tk|gq|cf|ga|ly|to|ws|ru|su|fr|jp|br|nl|"
+         "ca|au|se|ch|cz|dk|fi|ie|pt|gr|il|kr|tw|hk|sg|za|mx|tr|ua|vn|th|"
+         "ir|pw|tv|fm|gg|club|shop|store|tech|link|click|live|life|world|"
+         "today|space|website|pro|mobi|asia|win|work|download|stream|onion|"
+         "internal|local|lan|localhost")
 _HOST_RE = re.compile(
     r"(?i)(?<![\w.-])(?:[a-z0-9-]+\.)+(?:" + _TLDS + r")(?![\w-])"
     r"|(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])")
@@ -541,8 +548,11 @@ class OllamaClient(ModelClient):
         want = {model, model + ":latest" if ":" not in model else model}
         entry = None
         for m in models:
-            if isinstance(m, dict) and (m.get("name") in want
-                                        or m.get("model") in want):
+            if not isinstance(m, dict):
+                continue
+            nm, md = m.get("name"), m.get("model")
+            if (isinstance(nm, str) and nm in want) or (
+                    isinstance(md, str) and md in want):
                 entry = m
                 break
         if entry is None:

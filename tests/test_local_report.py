@@ -193,7 +193,8 @@ class TestFaultInjection(Base):
     def test_hostlike_output_is_unsafe(self):
         for txt in ("visit evil.com/x now", "go to //evil.example.net/a",
                     "see sub.evil.io", "use 10.1.2.3 instead",
-                    "docs at evil.dev", "text (//host/p)"):
+                    "docs at evil.dev", "text (//host/p)",
+                    "see evil.ca", "at x.club/y", "host.internal"):
             def fn(r, txt=txt):
                 d = json.loads(answer(r))
                 d["items"][0]["fix_suggestion"] = txt
@@ -573,6 +574,20 @@ class TestHttp(Base):
         _, doc = self.go(s.url)
         self.assertEqual(doc["ai_report"]["reason"], "remote_model_refused")
         self.assertEqual(self.posts(s), [])
+
+    def test_cloud_name_forms(self):
+        for n in ("x:cloud", "x:1t-cloud", "x:cloud-y", "X:CLOUD", "x_cloud",
+                  "cloud/x", "x-cloud:latest", "ｘ:ｃｌｏｕｄ"):
+            self.assertTrue(lr.is_cloud_name(n), n)
+        for n in ("qwen3:4b", "cloudy:1b", "x:4b-clouds", "qwen3"):
+            self.assertFalse(lr.is_cloud_name(n), n)
+
+    def test_non_str_tag_names_do_not_crash(self):
+        s = self.tags_server({"models": [
+            {"name": ["a"], "model": {"b": 1}}, {"name": 5},
+            {"name": "qwen3:4b", "digest": "ab" * 32}]})
+        _, doc = self.go(s.url)
+        self.assertNotEqual(doc["ai_report"].get("reason"), "malformed_output")
 
     def test_absent_model(self):
         s = self.tags_server({"models": [{"name": "other:1b"}]})
