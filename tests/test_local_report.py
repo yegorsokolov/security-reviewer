@@ -587,7 +587,7 @@ class TestHttp(Base):
             {"name": ["a"], "model": {"b": 1}}, {"name": 5},
             {"name": "qwen3:4b", "digest": "ab" * 32}]})
         _, doc = self.go(s.url)
-        self.assertNotEqual(doc["ai_report"].get("reason"), "malformed_output")
+        self.assertEqual(doc["ai_report"]["status"], "ok")
 
     def test_absent_model(self):
         s = self.tags_server({"models": [{"name": "other:1b"}]})
