@@ -56,6 +56,13 @@ def _is_placeholder(value: str) -> bool:
     return bool(tokens) and all(t in _PLACEHOLDER_TOKENS for t in tokens)
 
 
+def _is_placeholder_aws_id(value: str) -> bool:
+    """AKIA + 16 chars that is clearly filler: at most two distinct body
+    characters (AKIAXXXXXXXXXXXXXXXX) or AWS's documented EXAMPLE suffix."""
+    body = value[4:]
+    return len(set(body)) <= 2 or body.endswith("EXAMPLE")
+
+
 @dataclass(frozen=True)
 class Rule:
     id: str
@@ -65,12 +72,13 @@ class Rule:
     regex: re.Pattern
     group: int = 0
     reject_placeholders: bool = False
+    placeholder_fn: object = _is_placeholder
 
     def matches(self, line: str, include_placeholders: bool = False):
         """Yield (start, end) spans (0-based, end exclusive) of the secret."""
         for m in self.regex.finditer(line):
             if (self.reject_placeholders and not include_placeholders
-                    and _is_placeholder(m.group(self.group))):
+                    and self.placeholder_fn(m.group(self.group))):
                 continue
             yield m.start(self.group), m.end(self.group)
 
@@ -83,7 +91,8 @@ CRED_KEYWORDS = (
 
 RULES = (
     Rule("aws-access-key-id", "AWS access key ID in source", Severity.HIGH,
-         Confidence.MEDIUM, re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])")),
+         Confidence.MEDIUM, re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"),
+         reject_placeholders=True, placeholder_fn=_is_placeholder_aws_id),
     Rule("private-key", "Private key material in source", Severity.HIGH,
          Confidence.MEDIUM, re.compile(
              r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?"

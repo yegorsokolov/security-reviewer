@@ -91,6 +91,15 @@ class ScannerTest(unittest.TestCase):
         write(self.root, "a.py", "\n".join(lines) + "\n")
         self.assertEqual(self.scan(), [])
 
+    def test_placeholder_aws_ids_ignored_real_shapes_kept(self):
+        ph = ["AK" + "IA" + "X" * 16, "AK" + "IA" + "0" * 16,
+              "AK" + "IA" + "IOSFODNN7" + "EXAMPLE", "AK" + "IA" + "XY" * 8]
+        write(self.root, "a.py", "".join(f'k = "{v}"\n' for v in ph))
+        self.assertEqual(self.scan(), [])
+        write(self.root, "b.py", f'k = "{AWS}"\n'
+              'j = "' + "AK" + "IA" + "QWERTYUIOP12ABCD" + '"\n')
+        self.assertEqual(len(self.scan()), 2)
+
     def test_percent_format_placeholders_ignored(self):
         write(self.root, "a.py", 'SECRET = "%(secret)s"\n'
               'password = "%(db_password)s"\n')
