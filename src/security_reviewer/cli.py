@@ -207,7 +207,8 @@ def _review(args):
         "root": ".",
         "validated": not args.no_validate,
         "findings": [f.to_dict() for f in findings],
-        "advisory_matches": advisories.match_advisories(advs, packages),
+        "advisory_matches": advisories.link_findings(
+            advisories.match_advisories(advs, packages), findings),
         "coverage": res.coverage,
         "stats": res.stats,
         "limits": res.limits,

@@ -109,6 +109,16 @@ def _field(adv, key, required=True):
     return v
 
 
+def _rel_path(adv):
+    v = _field(adv, "path", False)
+    if v is None:
+        return None
+    if ("\x00" in v or "\\" in v or v.startswith("/")
+            or re.match(r"[A-Za-z]:", v) or ".." in v.split("/")):
+        raise AdvisoryError("advisory field 'path' must be a safe relative path")
+    return v
+
+
 def load_advisories(path):
     """Load and validate a local advisories JSON file (a list of objects)."""
     try:
@@ -130,7 +140,8 @@ def load_advisories(path):
         rec = {"id": _field(adv, "id"), "package": _field(adv, "package"),
                "affected": _field(adv, "affected"),
                "fixed": _field(adv, "fixed", False),
-               "cwe": _field(adv, "cwe", False)}
+               "cwe": _field(adv, "cwe", False),
+               "path": _rel_path(adv)}
         parse_range(rec["affected"])
         if rec["fixed"]:
             parse_version(rec["fixed"])
@@ -159,9 +170,30 @@ def match_advisories(advisories, packages):
             out.append({
                 "advisory_id": adv["id"], "package": name, "version": ver,
                 "affected_range": adv["affected"], "fixed": adv["fixed"],
-                "cwe": adv["cwe"],
+                "cwe": adv["cwe"], "path": adv.get("path"),
                 "status": classify(ver, adv["affected"], adv["fixed"]),
                 "source": "advisory",
             })
     out.sort(key=lambda r: (r["advisory_id"], r["package"], r["version"]))
     return out
+
+
+def link_findings(matches, findings):
+    """Add a sorted ``related_findings`` id list to each match record.
+
+    A deduplication hint only: a finding is related when the match is
+    ``affected``, the advisory names a path and/or CWE, and every named one
+    equals the finding's first-location path / CWE. Findings are not touched.
+    """
+    for m in matches:
+        ids = set()
+        path, cwe = m.get("path"), m.get("cwe")
+        if m.get("status") == "affected" and (path or cwe):
+            for f in findings:
+                if path and (not f.locations or f.locations[0].path != path):
+                    continue
+                if cwe and f.cwe != cwe:
+                    continue
+                ids.add(f.id)
+        m["related_findings"] = sorted(ids)
+    return matches

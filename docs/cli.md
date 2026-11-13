@@ -46,7 +46,7 @@ security-reviewer review PATH
 | --- | --- |
 | `--no-vuln` | Do not run the source vulnerability detectors. |
 | `--no-secrets` | Do not run the secret scanner (not both at once). |
-| `--advisories FILE` | Local JSON list of advisories (`id`, `package`, `affected`, optional `fixed`, `cwe`); see below. |
+| `--advisories FILE` | Local JSON list of advisories (`id`, `package`, `affected`, optional `fixed`, `cwe`, `path`); see below. |
 | `--package NAME=VERSION` | Declared package version to match against `--advisories`; repeatable. |
 | `--no-validate` | Skip the validator; findings stay `hypothesis`. |
 | `--output FILE` | Write the report to FILE instead of stdout. |
@@ -89,6 +89,13 @@ A single JSON object (sorted keys, 2-space indent, ASCII, trailing newline):
   per (advisory, `--package`) pair whose package names match (PEP 503
   normalised), with `status` `affected`, `patched` or `not_affected`.
   It never adds, removes or changes a finding or exit code.
+  Each record also carries `path` (or null) and `related_findings`, a sorted
+  list of finding ids. A finding is listed only if the status is `affected`,
+  the advisory gives `path` and/or `cwe`, and each one given equals the
+  finding's first-location path (exact string) and `cwe`. This is a
+  deduplication hint, not proof that the finding is the advisory's issue;
+  it never changes findings, their order or the exit code. Otherwise the
+  list is empty.
 - `ai_report`: present only with `--ai-report`; non-authoritative, never
   affects findings or the exit code (see [local-report.md](local-report.md)).
 - `stats`: scanner counters (files scanned, skip counts, cap flags). Skip
@@ -97,7 +104,8 @@ A single JSON object (sorted keys, 2-space indent, ASCII, trailing newline):
 
 Advisory ranges use `<=`, `<`, `>=`, `>`, `==`, `!=` joined by commas (AND),
 over a PEP 440-style version order (pre, post, dev, epoch; local part
-ignored). A malformed advisory file, range or `--package` is a usage error.
+ignored). The optional advisory `path` is a non-empty relative POSIX path
+(no leading `/`, drive prefix, backslash, `..` segment or NUL). A malformed advisory file, range or `--package` is a usage error.
 
 Two runs on the same input with the same options are byte-identical.
 
