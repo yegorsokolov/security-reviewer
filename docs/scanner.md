@@ -49,7 +49,7 @@ pattern redaction: a secret in a format no rule recognises and shorter than
 
 | Rule id | Detects | Severity | Confidence |
 | --- | --- | --- | --- |
-| `aws-access-key-id` | `AKIA` + 16 upper-case alphanumerics | high | medium |
+| `aws-access-key-id` | `AKIA` + 16 upper-case alphanumerics; filler-shaped ids (at most two distinct body characters, or an `EXAMPLE` suffix) are ignored. Temporary `ASIA` keys are not covered | high | medium |
 | `private-key` | PEM `-----BEGIN ... PRIVATE KEY-----` header | high | medium |
 | `github-token` | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` and `github_pat_` tokens | high | medium |
 | `slack-token` | `xoxa-`/`xoxb-`/`xoxp-`/`xoxr-`/`xoxs-` tokens | high | medium |
