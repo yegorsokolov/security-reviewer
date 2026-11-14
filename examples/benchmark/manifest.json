@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "cases": [
+    {"id": "join-vuln", "split": "dev", "role": "vulnerable", "snapshot": "snapshots/join-vuln",
+     "expected": [{"rule": "path-join-absolute-check-incomplete", "path": "j.py", "line": 13}],
+     "package": "demo-pkg", "version": "1.0", "ecosystem": "pypi",
+     "advisory": {"id": "ADV-DEMO-1", "affected": "<1.1", "fixed": "1.1", "cwe": "CWE-22"}},
+    {"id": "join-fixed", "split": "dev", "role": "fixed", "snapshot": "snapshots/join-fixed",
+     "expected": [],
+     "package": "demo-pkg", "version": "1.1", "ecosystem": "pypi",
+     "advisory": {"id": "ADV-DEMO-1", "affected": "<1.1", "fixed": "1.1", "cwe": "CWE-22"}},
+    {"id": "tar-vuln", "split": "dev", "role": "vulnerable", "snapshot": "snapshots/tar-vuln",
+     "expected": [{"rule": "tar-symlink-target-unchecked", "path": "t.py", "line": 9}]},
+    {"id": "tar-fixed", "split": "dev", "role": "fixed", "snapshot": "snapshots/tar-fixed",
+     "expected": []},
+    {"id": "control", "split": "dev", "role": "control", "snapshot": "snapshots/control",
+     "expected": []}
+  ]
+}

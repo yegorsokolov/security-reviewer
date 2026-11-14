@@ -145,3 +145,106 @@ exact weights used. No GPU is required: a 4B model runs on CPU, slowly
 ```
 security-reviewer review PATH --ai-report --ai-model qwen3:4b
 ```
+
+## Ollama setup, step by step
+
+1. Install Ollama (see above) and start the daemon with cloud disabled:
+
+   ```
+   OLLAMA_NO_CLOUD=1 ollama serve
+   ```
+
+   `OLLAMA_NO_CLOUD=1` must be set in the environment of the **daemon**
+   (for a systemd service, in its unit environment), not of the
+   `security-reviewer` process. It stops the daemon from forwarding any model
+   to a remote service.
+2. `ollama pull qwen3:4b` and note the digest with `ollama list`.
+3. Run the review with the opt-in flag:
+
+   ```
+   security-reviewer review PATH --ai-report --ai-timeout 120 --ai-num-ctx 4096
+   ```
+
+Defence in depth: independently of the daemon setting, the client refuses to
+send anything when `GET /api/tags` shows the model has a `remote_host` or
+`remote_model`, or when the model name looks like a cloud model, and it only
+connects to loopback (see "Local models only" and "Endpoint rules" above).
+
+## Model tested on CPU
+
+| Item | Value |
+| --- | --- |
+| Ollama | 0.40.16 |
+| Model | `qwen3:4b`, Q4_K_M |
+| Digest | `359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7` |
+| Hardware | CPU only, 4 vCPU, 7.7 GB RAM |
+| Settings | `--ai-num-ctx 4096` |
+| Result | cold end-to-end about 26 s on a single-finding report |
+
+This was a smoke test (2026-11-10), not a quality benchmark: one finding, one
+run. Expect other models, hardware and larger reports to differ, and raise
+`--ai-timeout` accordingly.
+
+## Report and suggested-fix workflow
+
+```mermaid
+flowchart LR
+    A[1. scan with --ai-report] --> B[2. review the authoritative findings]
+    B --> C[3. read ai_report as non-authoritative hints]
+    C --> D[4. apply the fix by hand]
+    D --> E[5. rerun the scan]
+    E --> F{finding gone?}
+    F -- yes --> G[done: for these rules only]
+    F -- no --> B
+```
+
+The tool never edits your code. The findings (with their evidence and
+remediation text) are the source of truth; the model's `fix_suggestion` is a
+hint to read after you have understood the finding. Rerun the scan after the
+change; the exit code and findings come from the detectors only.
+
+## Example `ai_report`
+
+Shape of the single-finding `qwen3:4b` output, with a synthetic finding id
+(the digest line is the pinned model above):
+
+```json
+"ai_report": {
+  "items": [
+    {
+      "fix_suggestion": "Remove hardcoded AWS access key ID from source code",
+      "id": "secret.aws-access-key-id.0123456789abcdef",
+      "summary": "Hardcoded AWS access key ID detected in source code"
+    }
+  ],
+  "label": "AI-generated, non-authoritative; scanner findings are authoritative",
+  "model": "qwen3:4b",
+  "model_digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+  "not_summarised": 0,
+  "status": "ok"
+}
+```
+
+## Interpreting model output
+
+- `status: ok`: the answer passed strict validation. It is still generated
+  text. `status: degraded` plus a `reason` (table above) means no usable
+  summary; the scan result is unaffected. `no_findings`: the model was not
+  called.
+- Summaries can be wrong, generic or incomplete: the example above merely
+  restates the rule and gives no instruction about rotating the key. Do not
+  rely on it for triage, severity or whether a secret is live.
+- The model cannot add, remove, re-rate or validate findings, and it never
+  changes the exit code.
+- Rotate real credentials regardless of what the model says.
+
+## Data flow to the model provider
+
+Nothing leaves the loopback interface. The client connects only to a literal
+loopback address (or `localhost` mapped to `127.0.0.1`), ignores proxy
+settings, follows no redirects and checks that the connected peer is
+loopback. The only data sent is the sanitised, bounded summary described in
+"What is sent / never sent": never file contents, code snippets, absolute
+paths or credential-like text. Ollama itself runs on your machine and, with
+`OLLAMA_NO_CLOUD=1` and a locally pulled model, makes no inference call to a
+remote provider. Without `--ai-report` no socket is opened at all.

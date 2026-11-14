@@ -1,0 +1,3 @@
+[
+  {"id": "ADV-DEMO-1", "package": "demo-pkg", "affected": "<1.1", "fixed": "1.1", "cwe": "CWE-22"}
+]
