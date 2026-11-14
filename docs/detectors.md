@@ -65,7 +65,8 @@ compares a declared version with a range and lists the result in
   tar rule, a guard whose condition merely calls a link-ish helper or the
   listed resolution calls counts, without proof it compares against the
   destination (false negative); the check position is by line number only.
-- Work caps: a function (about 3M node visits) or file (about 1.5M) that
+- Work caps: a function (about 500K node visits) or file (about 1.5M; every
+  charge counts against both budgets) that
   exceeds the analysis budget is skipped and counted in
   `coverage.detector_skipped`; analysis is otherwise linear in function size.
   The per-file cap keeps a hostile 1 MiB source file to a few seconds, and

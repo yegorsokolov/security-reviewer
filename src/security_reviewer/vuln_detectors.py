@@ -47,8 +47,10 @@ def language_of(path: str) -> str:
 # ------------------------------------------------------------ work caps
 #: Per-function and per-file work caps (roughly "AST nodes visited"). A
 #: function or file that exceeds them is skipped and counted under
-#: ``coverage["detector_skipped"]``; it is never an error.
-MAX_FUNCTION_WORK = 3_000_000
+#: ``coverage["detector_skipped"]``; it is never an error. Every charge counts
+#: against both budgets, so the function cap must not exceed the file cap or
+#: it could never trigger.
+MAX_FUNCTION_WORK = 500_000
 MAX_FILE_WORK = 1_500_000
 
 

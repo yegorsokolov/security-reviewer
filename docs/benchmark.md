@@ -62,7 +62,8 @@ the source detectors missed (still false negatives in the location score);
 (no runtimes) and is the only way a baseline changes. `--baseline FILE`
 compares with zero tolerance and exits 1, listing each regression, if recall,
 precision, any case's TP, or any fixed/lookalike/control case's false
-positives got worse, a baseline case is missing or changed role, or any
+positives got worse, `detector_skipped` or `detector_errors` increased, a
+new `source_scan_caps_hit` key appeared (all per case and mode), a baseline case is missing or changed role, or any
 baseline expectation was removed or edited (weakening expectations is itself a
 regression). Improvements pass but are not recorded. If `--baseline` and
 `--write-baseline` are combined and a regression exists, nothing is written.

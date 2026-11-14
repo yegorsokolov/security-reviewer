@@ -36,7 +36,7 @@ PYTHONPATH=src python3 -m security_reviewer review examples/demo --timestamp 202
 
 `examples/demo/` is a tiny synthetic fixture: `join_vuln.py` and
 `tar_vuln.py` trigger the two vulnerability rules and `settings.py` holds a
-made-up placeholder-style password (not a credential). Running the command
+made-up synthetic password literal (not a credential). Running the command
 above prints one JSON report (exit code 0); the complete output is checked in
 as [examples/expected/review.json](examples/expected/review.json). Its
 findings, abbreviated:
@@ -94,8 +94,8 @@ cmp "$out/a.json" "$out/b.json" && cmp "$out/a.json" examples/expected/review.js
 See [docs/interpreting-results.md](docs/interpreting-results.md) for the
 details. In short:
 
-- **Severity** (`high`/`medium`/`low`; the format also defines `critical` and
-  `info`, which the current rules do not emit) is the potential impact if the
+- **Severity** (the format defines `critical`, `high`, `medium`, `low` and `info`;
+  the current rules emit only `high` and `medium`) is the potential impact if the
   finding is real; **confidence** is how sure the rule is that this is a real
   instance. Neither is a probability of exploitation.
 - **Status** `hypothesis` means a rule matched. `validated` means the

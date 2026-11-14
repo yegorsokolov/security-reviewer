@@ -20,6 +20,20 @@ from test_vuln_detectors import (  # noqa: E402
 
 AWS = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
 SECRET_FIXTURE = 'aws_key = "' + AWS + '"\n'
+HELD_TAR_VULN = (
+    "def extract_links(tf, out):\n"
+    "    for entry in tf:\n"
+    "        if entry.issym():\n"
+    "            tf.extract(entry, out)\n")
+HELD_TAR_FIXED = (
+    "import os\n\n"
+    "def extract_links(tf, out):\n"
+    "    for entry in tf:\n"
+    "        if entry.issym():\n"
+    "            real = os.path.realpath(os.path.join(out, entry.linkname))\n"
+    "            if not real.startswith(out):\n"
+    "                raise ValueError(entry.name)\n"
+    "            tf.extract(entry, out)\n")
 PLACEHOLDERS = ('password = "change' + 'me"\napi_key = "your_api_key_here"\n'
                 'token = "AK' + 'IAABCDEFGH"\n')
 
@@ -85,6 +99,12 @@ class BenchBase(unittest.TestCase):
         case("held-join", "vulnerable", {"h.py": JOIN_VULN}, [
             (JOIN, "h.py", line_of(JOIN_VULN, "            or os.path.isabs(name)"))],
             split="heldout")
+        case("held-tar", "vulnerable", {"x.py": HELD_TAR_VULN}, [
+            (TAR, "x.py", line_of(HELD_TAR_VULN,
+                                  "        if entry.issym():"))],
+            split="heldout")
+        case("held-tar-fixed", "fixed", {"x.py": HELD_TAR_FIXED},
+             split="heldout")
         self.cases = cases
         self.write_manifest()
 
@@ -136,9 +156,12 @@ class TestScoring(BenchBase):
         self.assertEqual(list(rep["modes"]), ["source-only"])
         _, rep, _ = self.bm("--split", "heldout", "--deterministic")
         self.assertEqual(list(rep["modes"]["source-only"]["cases"]),
-                         ["held-join"])
+                         ["held-join", "held-tar", "held-tar-fixed"])
+        self.assertEqual(rep["case_count"], 3)
+        o = rep["modes"]["source-only"]["overall"]
+        self.assertEqual((o["tp"], o["fp"], o["fn"]), (2, 0, 0))
         _, rep, _ = self.bm("--split", "all", "--deterministic")
-        self.assertEqual(rep["case_count"], 9)
+        self.assertEqual(rep["case_count"], 11)
 
     def test_line_tolerance(self):
         for delta, ok in ((2, True), (-2, True), (3, False)):

@@ -211,15 +211,15 @@ class TestHostileInputs(unittest.TestCase):
     def test_many_isabs_lines_scan_in_linear_time(self):
         head = ("import os\ndef f(a):\n if a == '..':\n  pass\n"
                 " os.path.join(a)\n")
-        fs, sc = self.timed(head + " isabs(a)\n" * 80000)
+        fs, sc = self.timed(head + " isabs(a)\n" * 20000)
         self.assertTrue(fs)  # still detected
         self.assertEqual(sc.coverage["detector_skipped"], 0)
         fs, _ = self.timed(head + " if a.startswith('/'): pass\n"
-                           + " isabs(a)\n" * 80000)
+                           + " isabs(a)\n" * 20000)
         self.assertEqual(fs, [])
 
     def test_many_tar_branches_scan_in_linear_time(self):
-        body = "  if m.issym(): x.extract(m)\n" * 8000
+        body = "  if m.issym(): x.extract(m)\n" * 2000
         fs, _ = self.timed("def f(a):\n for m in a:\n" + body)
         self.assertTrue(fs)
         fs, _ = self.timed("def f(a):\n for m in a:\n"
@@ -265,10 +265,15 @@ class TestGuardHeuristics(unittest.TestCase):
         self.assertEqual([r for r, _ in rules(text)], [TAR])
 
     def test_strong_branch_test_still_skips(self):
+        # The strong guard (slash check on linkname, raising) really
+        # protects the extract in the elif branch.
         text = ("def f(tf, d):\n for m in tf:\n"
                 "  if m.issym() and m.linkname.startswith('/'):\n"
-                "   raise E\n  elif m.issym():\n   pass\n")
+                "   raise E\n  elif m.issym():\n   tf.extract(m, d)\n")
         self.assertEqual(rules(text), [])
+        # Control: a weak guard (truthiness only) still reports.
+        weak = text.replace(".startswith('/')", "")
+        self.assertEqual([r for r, _ in rules(weak)], [TAR])
 
     def test_truthiness_check_is_not_a_tar_guard(self):
         text = ("def f(a, d):\n for m in a:\n  if m.issym():\n"
@@ -288,6 +293,12 @@ class TestGuardHeuristics(unittest.TestCase):
         text = JOIN_VULN.replace(
             _DOTS, 'or name.split("/")[0] == ""\n            ' + _DOTS)
         self.assertEqual(rules(text), [])  # known false negative (docs)
+
+
+class TestWorkCaps(unittest.TestCase):
+    def test_function_cap_not_above_file_cap(self):
+        self.assertLessEqual(vuln_detectors.MAX_FUNCTION_WORK,
+                             vuln_detectors.MAX_FILE_WORK)
 
 
 class TestFindingShape(unittest.TestCase):
