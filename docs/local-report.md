@@ -137,6 +137,11 @@ ollama pull qwen3:4b
 ollama list                                       # note the digest
 ```
 
+If `ollama serve` is already running as a systemd service (the install script
+sets one up), the `OLLAMA_NO_CLOUD=1` shown above does not reach it; run
+`sudo systemctl edit ollama` and add `Environment="OLLAMA_NO_CLOUD=1"` under
+`[Service]`, then `sudo systemctl restart ollama`.
+
 Record the digest from `ollama list` (or `ai_report.model_digest`) to pin the
 exact weights used. No GPU is required: a 4B model runs on CPU, slowly
 (expect tens of seconds); raise `--ai-timeout` as needed and keep
@@ -240,7 +245,7 @@ Shape of the single-finding `qwen3:4b` output, with a synthetic finding id
 
 ## Data flow to the model provider
 
-Nothing leaves the loopback interface. The client connects only to a literal
+Nothing leaves the loopback interface from this tool's client. The client connects only to a literal
 loopback address (or `localhost` mapped to `127.0.0.1`), ignores proxy
 settings, follows no redirects and checks that the connected peer is
 loopback. The only data sent is the sanitised, bounded summary described in

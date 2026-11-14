@@ -83,9 +83,10 @@ it never changes `findings`.
 Re-running with the same options gives byte-identical output:
 
 ```
-security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output /tmp/a.json
-security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output /tmp/b.json
-cmp /tmp/a.json /tmp/b.json && cmp /tmp/a.json examples/expected/review.json && echo identical
+out=$(mktemp -d)
+security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output "$out/a.json"
+security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output "$out/b.json"
+cmp "$out/a.json" "$out/b.json" && cmp "$out/a.json" examples/expected/review.json && echo identical
 ```
 
 ## Reading the result
@@ -93,7 +94,8 @@ cmp /tmp/a.json /tmp/b.json && cmp /tmp/a.json examples/expected/review.json && 
 See [docs/interpreting-results.md](docs/interpreting-results.md) for the
 details. In short:
 
-- **Severity** (`high`/`medium`/`low`) is the potential impact if the
+- **Severity** (`high`/`medium`/`low`; the format also defines `critical` and
+  `info`, which the current rules do not emit) is the potential impact if the
   finding is real; **confidence** is how sure the rule is that this is a real
   instance. Neither is a probability of exploitation.
 - **Status** `hypothesis` means a rule matched. `validated` means the
