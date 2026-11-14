@@ -130,7 +130,7 @@ flowchart LR
 stateDiagram-v2
     [*] --> hypothesis: scanner rule matches
     hypothesis --> validated: validator re-matches locally
-    hypothesis --> rejected: validator or reviewer rules it out
+    hypothesis --> rejected: reviewer rules it out (recorded state, not produced by the CLI)
     validated --> fixed: code changed, rescan no longer matches
     hypothesis --> fixed: code changed, rescan no longer matches
     rejected --> [*]
@@ -181,8 +181,9 @@ and `fixed` are recorded states in the
 Reproduce the scoring harness on a tiny synthetic benchmark with
 [docs/benchmark.md](docs/benchmark.md). Third-party snapshots, the held-out
 split, private findings and scoring labels live outside this repository and
-must not be committed. The optional local model summary (loopback Ollama,
-nothing leaves the machine) is described in
+must not be committed. The optional local model summary (the client only
+talks to loopback; with `OLLAMA_NO_CLOUD=1` and a locally pulled model no
+inference leaves the machine) is described in
 [docs/local-report.md](docs/local-report.md).
 
 ## Tests

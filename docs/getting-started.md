@@ -27,7 +27,8 @@ The examples below use the installed command; prefix with
 ## Run the synthetic example
 
 ```
-security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output report.json
+T=$(mktemp -d)    # scratch directory outside the repository
+security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z --output "$T/report.json"
 echo $?        # 0
 ```
 
@@ -38,7 +39,7 @@ password literal, not a credential). The result must equal
 [../examples/expected/review.json](../examples/expected/review.json):
 
 ```
-cmp report.json examples/expected/review.json && echo identical
+cmp "$T/report.json" examples/expected/review.json && echo identical
 ```
 
 Fail a CI job on any finding:
@@ -56,7 +57,7 @@ security-reviewer review examples/demo --timestamp 2026-01-02T03:04:05Z \
 
 Expected: [../examples/expected/review-advisory.json](../examples/expected/review-advisory.json).
 
-Do not write `report.json` for a real repository inside a tracked directory;
+Do not write reports for a real repository inside a tracked directory;
 see the handling notes in [interpreting-results.md](interpreting-results.md).
 
 ## Exit codes

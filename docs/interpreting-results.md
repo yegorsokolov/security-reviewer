@@ -2,7 +2,8 @@
 
 ## Severity and confidence
 
-- `severity` (`high`, `medium`, `low`): the impact if the finding is a real
+- `severity` (`high`, `medium`, `low`; the schema also defines `critical`
+  and `info`, but the current rules emit only `high` and `medium`): the impact if the finding is a real
   instance. Example: `tar-symlink-target-unchecked` is high, a
   `generic-credential` match is medium.
 - `confidence` (`high`, `medium`, `low`): how sure the rule is that this is a

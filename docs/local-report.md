@@ -132,7 +132,7 @@ URLs and markdown links are neutralised. Model text appears only inside
 
 ```
 curl -fsSL https://ollama.com/install.sh | sh     # or your package manager
-ollama serve                                      # listens on 127.0.0.1:11434
+OLLAMA_NO_CLOUD=1 ollama serve                    # listens on 127.0.0.1:11434
 ollama pull qwen3:4b
 ollama list                                       # note the digest
 ```
@@ -156,8 +156,8 @@ security-reviewer review PATH --ai-report --ai-model qwen3:4b
 
    `OLLAMA_NO_CLOUD=1` must be set in the environment of the **daemon**
    (for a systemd service, in its unit environment), not of the
-   `security-reviewer` process. It stops the daemon from forwarding any model
-   to a remote service.
+   `security-reviewer` process. It disables Ollama cloud models; see Ollama's
+   documentation for the exact guarantee.
 2. `ollama pull qwen3:4b` and note the digest with `ollama list`.
 3. Run the review with the opt-in flag:
 
@@ -189,10 +189,10 @@ run. Expect other models, hardware and larger reports to differ, and raise
 
 ```mermaid
 flowchart LR
-    A[1. scan with --ai-report] --> B[2. review the authoritative findings]
-    B --> C[3. read ai_report as non-authoritative hints]
-    C --> D[4. apply the fix by hand]
-    D --> E[5. rerun the scan]
+    A[Step 1: scan with --ai-report] --> B[Step 2: review the authoritative findings]
+    B --> C[Step 3: read ai_report as non-authoritative hints]
+    C --> D[Step 4: apply the fix by hand]
+    D --> E[Step 5: rerun the scan]
     E --> F{finding gone?}
     F -- yes --> G[done: for these rules only]
     F -- no --> B
@@ -245,6 +245,7 @@ loopback address (or `localhost` mapped to `127.0.0.1`), ignores proxy
 settings, follows no redirects and checks that the connected peer is
 loopback. The only data sent is the sanitised, bounded summary described in
 "What is sent / never sent": never file contents, code snippets, absolute
-paths or credential-like text. Ollama itself runs on your machine and, with
+paths or credential-like text (best effort: the sanitiser redacts known
+secret patterns, see above). Ollama itself runs on your machine and, with
 `OLLAMA_NO_CLOUD=1` and a locally pulled model, makes no inference call to a
 remote provider. Without `--ai-report` no socket is opened at all.

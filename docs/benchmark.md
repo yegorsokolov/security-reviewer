@@ -87,6 +87,7 @@ if you did not `pip install .`):
 
 ```
 M="examples/benchmark/manifest.json --root examples/benchmark"
+T=$(mktemp -d)    # scratch directory outside the repository
 
 # source-only: detector findings only
 security-reviewer benchmark $M --mode source-only --deterministic
@@ -98,19 +99,19 @@ security-reviewer benchmark $M --mode advisory-assisted --deterministic
 security-reviewer benchmark $M --mode both --deterministic
 
 # write a baseline (explicit, the only way a baseline changes), then compare
-security-reviewer benchmark $M --deterministic --write-baseline baseline.json
-security-reviewer benchmark $M --deterministic --baseline baseline.json; echo $?   # 0
+security-reviewer benchmark $M --deterministic --write-baseline $T/baseline.json
+security-reviewer benchmark $M --deterministic --baseline $T/baseline.json; echo $?   # 0
 
 # reproducibility: run twice and compare byte for byte
-security-reviewer benchmark $M --deterministic --output a.json
-security-reviewer benchmark $M --deterministic --output b.json
-cmp a.json b.json && echo identical
+security-reviewer benchmark $M --deterministic --output $T/a.json
+security-reviewer benchmark $M --deterministic --output $T/b.json
+cmp $T/a.json $T/b.json && echo identical
 ```
 
 Checked-in outputs: [both](../examples/expected/benchmark-both.json),
 [source-only](../examples/expected/benchmark-source-only.json),
 [advisory-assisted](../examples/expected/benchmark-advisory-assisted.json).
-Do not commit `baseline.json` you create for private data. Note that a
+Do not commit a baseline you create for private data. Note that a
 `--baseline` run adds a `regressions` list to the report and omits
 `failed_expectations`, so it is not byte-identical to a run without
 `--baseline`.
