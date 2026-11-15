@@ -66,10 +66,13 @@ compares a declared version with a range and lists the result in
   listed resolution calls counts, without proof it compares against the
   destination (false negative); the check position is by line number only.
 - Work caps: analysis work is counted in roughly AST node visits. A function
-  that exceeds its budget (about 500K visits) or a file that exceeds its
-  budget (about 1.5M) is skipped and counted in `coverage.detector_skipped`;
-  every visit is charged against both budgets, so the function cap can never
-  exceed the file cap. Analysis is otherwise linear in function size.
+  that exceeds its budget (about 500K visits) is skipped and counted in
+  `coverage.detector_skipped`. Every visit is also charged against the file
+  budget (about 1.5M), so the function cap must not exceed the file cap or it
+  could never fire. When the file budget runs out, the remaining functions in
+  that file are skipped (each counted in `detector_skipped`); findings from
+  functions already analysed are kept. Analysis is otherwise linear in
+  function size.
   The per-file cap keeps a hostile 1 MiB source file to a few seconds, and
   total scan time is bounded by the scanner's `max_total_bytes` limit because
   each file's work is capped. The benchmark records `detector_skipped`,
