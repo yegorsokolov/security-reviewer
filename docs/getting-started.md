@@ -34,8 +34,8 @@ echo $?        # 0
 
 `examples/demo/` holds invented code: `join_vuln.py` (rule
 `path-join-absolute-check-incomplete`), `tar_vuln.py` (rule
-`tar-symlink-target-unchecked`) and `settings.py` (a made-up synthetic password
-literal, not a credential). The result must equal
+`tar-symlink-target-unchecked`) and `settings.py` (a made-up password string that only
+exercises the secret rule, not a credential). The result must equal
 [../examples/expected/review.json](../examples/expected/review.json):
 
 ```

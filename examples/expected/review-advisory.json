@@ -185,7 +185,7 @@
   "root": ".",
   "schema_version": 1,
   "stats": {
-    "bytes_read": 1495,
+    "bytes_read": 1605,
     "entries_visited": 5,
     "files_scanned": 5,
     "findings": 1,

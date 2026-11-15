@@ -65,10 +65,11 @@ compares a declared version with a range and lists the result in
   tar rule, a guard whose condition merely calls a link-ish helper or the
   listed resolution calls counts, without proof it compares against the
   destination (false negative); the check position is by line number only.
-- Work caps: a function (about 500K node visits) or file (about 1.5M; every
-  charge counts against both budgets) that
-  exceeds the analysis budget is skipped and counted in
-  `coverage.detector_skipped`; analysis is otherwise linear in function size.
+- Work caps: analysis work is counted in roughly AST node visits. A function
+  that exceeds its budget (about 500K visits) or a file that exceeds its
+  budget (about 1.5M) is skipped and counted in `coverage.detector_skipped`;
+  every visit is charged against both budgets, so the function cap can never
+  exceed the file cap. Analysis is otherwise linear in function size.
   The per-file cap keeps a hostile 1 MiB source file to a few seconds, and
   total scan time is bounded by the scanner's `max_total_bytes` limit because
   each file's work is capped. The benchmark records `detector_skipped`,

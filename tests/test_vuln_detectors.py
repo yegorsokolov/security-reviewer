@@ -296,6 +296,17 @@ class TestGuardHeuristics(unittest.TestCase):
 
 
 class TestWorkCaps(unittest.TestCase):
+    def test_function_cap_fires_while_file_cap_does_not(self):
+        # Only the per-function cap is lowered; the file cap keeps its
+        # default. The oversized function is skipped and counted, while a
+        # small vulnerable function in the same file is still reported.
+        big = "def big(a):\n" + " x = 1\n" * 400 + "\n\n"
+        self.assertEqual(vuln_detectors.MAX_FILE_WORK, 1_500_000)
+        with mock.patch.object(vuln_detectors, "MAX_FUNCTION_WORK", 300):
+            fs, sc = scan_one(big + JOIN_VULN)
+        self.assertGreaterEqual(sc.coverage["detector_skipped"], 1)
+        self.assertEqual([f.id.split(".")[1] for f in fs], [JOIN])
+
     def test_function_cap_not_above_file_cap(self):
         self.assertLessEqual(vuln_detectors.MAX_FUNCTION_WORK,
                              vuln_detectors.MAX_FILE_WORK)
