@@ -55,6 +55,23 @@ pattern redaction: a secret in a format no rule recognises and shorter than
 | `slack-token` | `xoxa-`/`xoxb-`/`xoxp-`/`xoxr-`/`xoxs-` tokens | high | medium |
 | `generic-credential` | a credential keyword (see below) assigned a quoted literal of 8+ characters; whole-value placeholders (see below) are ignored | medium | low |
 
+### AWS key id placeholders and temporary keys
+
+The `aws-access-key-id` rule deliberately skips ids that are clearly filler,
+so documentation and test fixtures do not raise findings: a body (the 16
+characters after `AKIA`) with at most two distinct characters, such as
+`AKIAXXXXXXXXXXXXXXXX`, or one ending in `EXAMPLE`, as in AWS's own
+documentation. A real key that happens to have such a body would also be
+skipped; the skip is a precision trade-off, not a validity check.
+
+Temporary (STS) key ids that begin with `ASIA` are **not** detected. This is
+a deliberate decision for this release: the rule set and its benchmark are
+frozen, and an `ASIA` id alone is short-lived and unusable without its
+secret and session token, which the `generic-credential` rule may still flag
+when assigned as a quoted literal. Adding `ASIA` support later would be a
+small, separately benchmarked change to the rule, its path-name pattern and
+the placeholder check.
+
 ### Untrusted content and limits
 
 Scanned files are data. They are never imported or executed, are read as bytes
