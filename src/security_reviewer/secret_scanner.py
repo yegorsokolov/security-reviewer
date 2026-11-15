@@ -11,7 +11,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -72,7 +72,7 @@ class Rule:
     regex: re.Pattern
     group: int = 0
     reject_placeholders: bool = False
-    placeholder_fn: object = _is_placeholder
+    placeholder_fn: Callable[[str], bool] = _is_placeholder
 
     def matches(self, line: str, include_placeholders: bool = False):
         """Yield (start, end) spans (0-based, end exclusive) of the secret."""
