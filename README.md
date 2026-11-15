@@ -37,8 +37,9 @@ PYTHONPATH=src python3 -m security_reviewer review examples/demo --timestamp 202
 `examples/demo/` is a tiny synthetic fixture: `join_vuln.py` and
 `tar_vuln.py` trigger the two vulnerability rules and `settings.py` holds a
 made-up password string that only exists to exercise the secret rule (not a
-credential). Running the command above prints one JSON report (exit code 0); the complete output is checked in
-as [examples/expected/review.json](examples/expected/review.json). Its
+credential). Running the command above prints one JSON report (exit code 0);
+the complete output is checked in as
+[examples/expected/review.json](examples/expected/review.json). Its
 findings, abbreviated:
 
 | Finding id | Rule | Where | Severity | Confidence | Status |
