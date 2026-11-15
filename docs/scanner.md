@@ -67,8 +67,9 @@ skipped; the skip is a precision trade-off, not a validity check.
 Temporary (STS) key ids that begin with `ASIA` are **not** detected. This is
 a deliberate decision for this release: the rule set and its benchmark are
 frozen, and an `ASIA` id alone is short-lived and unusable without its
-secret and session token, which the `generic-credential` rule may still flag
-when assigned as a quoted literal. Adding `ASIA` support later would be a
+secret access key and session token. The `generic-credential` rule may still
+flag the secret access key (for example `aws_secret_access_key`) when it is
+assigned as a quoted literal; session tokens are not matched by any rule. Adding `ASIA` support later would be a
 small, separately benchmarked change to the rule, its path-name pattern and
 the placeholder check.
 
