@@ -92,8 +92,21 @@ class ReviewExample(unittest.TestCase):
         self.assertEqual(ai["not_summarised"], 0)
         ids = {f["id"] for f in rep["findings"]}
         self.assertTrue(ai["items"])
+        item_ids = [item["id"] for item in ai["items"]]
+        self.assertEqual(len(item_ids), len(set(item_ids)))
+        for item_id in item_ids:
+            self.assertIn(item_id, ids)
+        # No private roots, absolute paths or credential-like text in the
+        # published sample.
+        raw = expected("review-ai-qwen3-4b.json")
+        for needle in ("/home/", "/Users/", "/root/", "/tmp/", "C:\\",
+                       ROOT):
+            self.assertNotIn(needle, raw)
+        self.assertIsNone(re.search(
+            r"AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-"
+            r"|-----BEGIN [A-Z ]*PRIVATE KEY", raw))
         for item in ai["items"]:
-            self.assertIn(item["id"], ids)
+            self.assertEqual(set(item), {"id", "summary", "fix_suggestion"})
 
     def test_usage_error_exit_2(self):
         self.assertEqual(cli("review", "examples/does-not-exist")[0], 2)

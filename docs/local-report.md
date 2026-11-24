@@ -177,36 +177,52 @@ connects to loopback (see "Local models only" and "Endpoint rules" above).
 
 ## Model tested on CPU
 
+Smoke test of 2026-11-10 (one finding, one run):
+
 | Item | Value |
 | --- | --- |
-| Ollama | 0.40.16 |
+| Ollama client/server | 0.40.16 |
 | Model | `qwen3:4b`, Q4_K_M |
 | Digest | `359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7` |
 | Hardware | CPU only, 4 vCPU, 7.7 GB RAM |
 | Settings | `--ai-num-ctx 4096` |
 | Result | cold end-to-end about 26 s on a single-finding report |
 
-This was a smoke test (2026-11-10), not a quality benchmark: one finding, one
-run. Expect other models, hardware and larger reports to differ, and raise
-`--ai-timeout` accordingly.
+This was a smoke test, not a quality benchmark. Expect other models, hardware
+and larger reports to differ, and raise `--ai-timeout` accordingly.
 
-Rerun on 2026-11-24 against the release commit `f56d1a6`:
+Rerun of 2026-11-24 against commit `f56d1a6`, the tested source commit (later
+commits only change documentation and tests):
 
 | Item | Value |
 | --- | --- |
-| Ollama | 0.40.16, same digest as above |
-| Hardware | CPU only, 4 vCPU |
-| Endpoint | loopback `127.0.0.1`, `OLLAMA_NO_CLOUD=1` |
+| Ollama | 0.40.16, `library=cpu`, no GPU |
+| Model | `qwen3:4b`, Q4_K_M |
+| Digest | `359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7` |
+| Hardware | CPU only, 4 vCPU, 7.7 GB RAM |
+| Daemon | `127.0.0.1:11434`, `OLLAMA_NO_CLOUD=1` |
 | Settings | `--ai-num-ctx 4096`, `--ai-timeout 600` |
 | Input | `examples/demo` with 3 findings |
 | Result | cold run about 61 s, warm run about 27 s |
 | Report | `status` ok, 0 `not_summarised` |
 
+Exact commands (the daemon must already be running with cloud disabled, as
+in the setup steps above):
+
+```
+OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 ollama serve &
+security-reviewer review examples/demo \
+  --advisories examples/demo/advisories.json \
+  --ai-report --ai-model qwen3:4b --ai-num-ctx 4096 --ai-timeout 600
+```
+
 The captured sample is
 [examples/expected/review-ai-qwen3-4b.json](../examples/expected/review-ai-qwen3-4b.json).
 It is one non-deterministic sample, not a benchmark: another run can word the
 items differently. The scanner verdicts stay authoritative, and the tests
-check only that the scanner part of the sample matches the scanner output.
+check only that the scanner part of the sample matches the scanner output,
+that item ids are unique and belong to real findings, and that the sample
+contains no absolute paths or credential-like text.
 
 ## Report and suggested-fix workflow
 
