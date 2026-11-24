@@ -102,6 +102,7 @@ class ReviewExample(unittest.TestCase):
         for needle in ("/home/", "/Users/", "/root/", "/tmp/", "C:\\",
                        ROOT):
             self.assertNotIn(needle, raw)
+        self.assertNotIn("synthetic-demo-not-a-real-password", raw)
         self.assertIsNone(re.search(
             r"AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-"
             r"|-----BEGIN [A-Z ]*PRIVATE KEY", raw))

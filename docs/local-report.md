@@ -199,15 +199,16 @@ commits only change documentation and tests):
 | Ollama | 0.40.16, `library=cpu`, no GPU |
 | Model | `qwen3:4b`, Q4_K_M |
 | Digest | `359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7` |
-| Hardware | CPU only, 4 vCPU, 7.7 GB RAM |
+| Hardware | CPU only, 4 vCPU, 7.6 GiB RAM |
 | Daemon | `127.0.0.1:11434`, `OLLAMA_NO_CLOUD=1` |
 | Settings | `--ai-num-ctx 4096`, `--ai-timeout 600` |
 | Input | `examples/demo` with 3 findings |
 | Result | cold run about 61 s, warm run about 27 s |
 | Report | `status` ok, 0 `not_summarised` |
 
-Exact commands (the daemon must already be running with cloud disabled, as
-in the setup steps above):
+Exact commands (start the daemon with cloud disabled, then run the review; if
+a systemd daemon already owns the port, skip the `serve` line and follow the
+systemd note above instead):
 
 ```
 OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 ollama serve &
@@ -222,7 +223,8 @@ It is one non-deterministic sample, not a benchmark: another run can word the
 items differently. The scanner verdicts stay authoritative, and the tests
 check only that the scanner part of the sample matches the scanner output,
 that item ids are unique and belong to real findings, and that the sample
-contains no absolute paths or credential-like text.
+contains no home or temp paths, checkout root, demo secret value or
+credential-like token.
 
 ## Report and suggested-fix workflow
 
