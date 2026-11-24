@@ -1,0 +1,217 @@
+{
+  "advisory_matches": [],
+  "ai_report": {
+    "items": [
+      {
+        "fix_suggestion": "Add check for leading '/' in path joins",
+        "id": "vuln.path-join-absolute-check-incomplete.313723afc31bd1e7",
+        "summary": "Path-join guard checks isabs() and '..' but not a leading '/'"
+      },
+      {
+        "fix_suggestion": "Remove hardcoded credential assignment",
+        "id": "secret.generic-credential.10720fd687a4fc0a",
+        "summary": "Hardcoded credential assignment"
+      },
+      {
+        "fix_suggestion": "Validate symlink target before extraction",
+        "id": "vuln.tar-symlink-target-unchecked.9d0038aeaf0badc2",
+        "summary": "Tar symlink/hardlink member extracted without checking its target"
+      }
+    ],
+    "label": "AI-generated, non-authoritative; scanner findings are authoritative",
+    "model": "qwen3:4b",
+    "model_digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+    "not_summarised": 0,
+    "status": "ok"
+  },
+  "coverage": {
+    "detector_errors": 0,
+    "detector_skipped": 0,
+    "files_parsed": 3,
+    "files_seen": {
+      "other": 2,
+      "python": 3
+    },
+    "rules_run": {
+      "secret": [
+        "aws-access-key-id",
+        "generic-credential",
+        "github-token",
+        "private-key",
+        "slack-token"
+      ],
+      "vulnerability": [
+        "path-join-absolute-check-incomplete",
+        "tar-symlink-target-unchecked"
+      ]
+    },
+    "source_detectors_ran": true,
+    "source_scan_caps_hit": {
+      "hit_byte_cap": false,
+      "hit_depth_cap": false,
+      "hit_entry_cap": false,
+      "hit_file_cap": false,
+      "hit_finding_cap": false
+    },
+    "unsupported": {
+      "unparseable": 0,
+      "unsupported_language": 2
+    }
+  },
+  "finding_schema_version": "1",
+  "findings": [
+    {
+      "category": "path-traversal",
+      "confidence": "medium",
+      "cwe": "CWE-22",
+      "description": "A function validates untrusted path components with isabs() and a '..' check before joining them, but does not also reject a leading '/'. On platforms where isabs() does not treat '/x' as absolute (for example ntpath before Python 3.11) the join can escape the base directory.",
+      "evidence": [
+        {
+          "kind": "tool_output",
+          "summary": "Rule path-join-absolute-check-incomplete matched structurally at line 13."
+        },
+        {
+          "kind": "code_snippet",
+          "snippet": "or os.path.isabs(name)",
+          "summary": "Source line at the finding location."
+        }
+      ],
+      "id": "vuln.path-join-absolute-check-incomplete.313723afc31bd1e7",
+      "locations": [
+        {
+          "end_line": 13,
+          "path": "join_vuln.py",
+          "start_column": 16,
+          "start_line": 13
+        }
+      ],
+      "origin": "static_tool",
+      "remediation": {
+        "references": [
+          "https://cwe.mitre.org/data/definitions/22.html",
+          "https://github.com/advisories/GHSA-f9vj-2wh5-fj8j"
+        ],
+        "summary": "Also reject components that start with '/' (for example `filename.startswith(\"/\")`), or verify containment of the joined path with os.path.commonpath after normalisation."
+      },
+      "schema_version": "1",
+      "severity": "medium",
+      "status": "hypothesis",
+      "title": "Path-join guard checks isabs() and '..' but not a leading '/'"
+    },
+    {
+      "category": "hardcoded-secret",
+      "confidence": "low",
+      "cwe": "CWE-798",
+      "description": "A value that looks like a hardcoded secret was found. The value is intentionally not included in this finding.",
+      "evidence": [
+        {
+          "kind": "tool_output",
+          "summary": "Rule generic-credential matched at line 2; secret value redacted."
+        },
+        {
+          "kind": "code_snippet",
+          "snippet": "password = \"[REDACTED]",
+          "summary": "Text before the match; the rest is redacted."
+        }
+      ],
+      "id": "secret.generic-credential.10720fd687a4fc0a",
+      "locations": [
+        {
+          "end_column": 46,
+          "end_line": 2,
+          "path": "settings.py",
+          "start_column": 13,
+          "start_line": 2
+        }
+      ],
+      "origin": "static_tool",
+      "remediation": {
+        "references": [
+          "https://cwe.mitre.org/data/definitions/798.html"
+        ],
+        "summary": "Treat the credential as compromised: rotate or revoke it at the issuer, remove it from the source (and purge it from git history), and load it from an environment variable or a secret manager instead."
+      },
+      "schema_version": "1",
+      "severity": "medium",
+      "status": "validated",
+      "title": "Hardcoded credential assignment",
+      "validation": {
+        "method": "tool_confirmed",
+        "notes": "Pattern re-matched at the recorded location; this does not prove the credential is live.",
+        "validated_at": "1970-01-01T00:00:00Z",
+        "validated_by": "security_reviewer.SecretValidator"
+      }
+    },
+    {
+      "category": "path-traversal",
+      "confidence": "medium",
+      "cwe": "CWE-22",
+      "description": "A branch that handles symlink or hardlink tar members extracts the member without any check relating the link target (linkname) to the extraction directory, so a crafted archive can create a link that points outside it.",
+      "evidence": [
+        {
+          "kind": "tool_output",
+          "summary": "Rule tar-symlink-target-unchecked matched structurally at line 9."
+        },
+        {
+          "kind": "code_snippet",
+          "snippet": "elif member.issym():",
+          "summary": "Source line at the finding location."
+        }
+      ],
+      "id": "vuln.tar-symlink-target-unchecked.9d0038aeaf0badc2",
+      "locations": [
+        {
+          "end_line": 9,
+          "path": "tar_vuln.py",
+          "start_column": 9,
+          "start_line": 9
+        }
+      ],
+      "origin": "static_tool",
+      "remediation": {
+        "references": [
+          "https://cwe.mitre.org/data/definitions/22.html",
+          "https://github.com/advisories/GHSA-4xh5-x5gv-qwph"
+        ],
+        "summary": "Validate the link target before extracting (resolve it relative to the member and require it to stay inside the destination), or use tarfile's filter=\"data\" where available."
+      },
+      "schema_version": "1",
+      "severity": "high",
+      "status": "hypothesis",
+      "title": "Tar symlink/hardlink member extracted without checking its target"
+    }
+  ],
+  "limits": {
+    "max_depth": 64,
+    "max_entries": 200000,
+    "max_file_size": 1048576,
+    "max_files": 10000,
+    "max_findings": 1000,
+    "max_line_length": 2000,
+    "max_total_bytes": 67108864
+  },
+  "root": ".",
+  "schema_version": 1,
+  "stats": {
+    "bytes_read": 1605,
+    "entries_visited": 5,
+    "files_scanned": 5,
+    "findings": 1,
+    "hit_byte_cap": false,
+    "hit_depth_cap": false,
+    "hit_entry_cap": false,
+    "hit_file_cap": false,
+    "hit_finding_cap": false,
+    "skipped_bad_path": 0,
+    "skipped_binary": 0,
+    "skipped_oversize": 0,
+    "skipped_secret_in_path": 0,
+    "skipped_special": 0,
+    "skipped_symlink": 0,
+    "skipped_too_deep": 0,
+    "skipped_unreadable": 0,
+    "truncated_lines": 0
+  },
+  "tool": "security-reviewer",
+  "validated": true
+}

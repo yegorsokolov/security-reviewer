@@ -190,6 +190,24 @@ This was a smoke test (2026-11-10), not a quality benchmark: one finding, one
 run. Expect other models, hardware and larger reports to differ, and raise
 `--ai-timeout` accordingly.
 
+Rerun on 2026-11-24 against the release commit `f56d1a6`:
+
+| Item | Value |
+| --- | --- |
+| Ollama | 0.40.16, same digest as above |
+| Hardware | CPU only, 4 vCPU |
+| Endpoint | loopback `127.0.0.1`, `OLLAMA_NO_CLOUD=1` |
+| Settings | `--ai-num-ctx 4096`, `--ai-timeout 600` |
+| Input | `examples/demo` with 3 findings |
+| Result | cold run about 61 s, warm run about 27 s |
+| Report | `status` ok, 0 `not_summarised` |
+
+The captured sample is
+[examples/expected/review-ai-qwen3-4b.json](../examples/expected/review-ai-qwen3-4b.json).
+It is one non-deterministic sample, not a benchmark: another run can word the
+items differently. The scanner verdicts stay authoritative, and the tests
+check only that the scanner part of the sample matches the scanner output.
+
 ## Report and suggested-fix workflow
 
 ```mermaid

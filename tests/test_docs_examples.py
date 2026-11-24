@@ -73,6 +73,28 @@ class ReviewExample(unittest.TestCase):
         self.assertEqual(rep["findings"], plain["findings"])
         self.assertEqual(rep["advisory_matches"][0]["status"], "affected")
 
+    def test_ai_sample_matches_scanner_output(self):
+        # Offline: the model text is one non-deterministic sample and is
+        # never compared against a live model.
+        sample = json.loads(expected("review-ai-qwen3-4b.json"))
+        code, out, _ = cli("review", "examples/demo", "--advisories",
+                           "examples/demo/advisories.json")
+        self.assertEqual(code, 0)
+        rep = json.loads(out)
+        ai = sample.pop("ai_report")
+        self.assertEqual(sample, rep)
+        self.assertEqual(
+            ai["label"],
+            "AI-generated, non-authoritative; scanner findings are "
+            "authoritative")
+        self.assertEqual(ai["status"], "ok")
+        self.assertEqual(ai["model"], "qwen3:4b")
+        self.assertEqual(ai["not_summarised"], 0)
+        ids = {f["id"] for f in rep["findings"]}
+        self.assertTrue(ai["items"])
+        for item in ai["items"]:
+            self.assertIn(item["id"], ids)
+
     def test_usage_error_exit_2(self):
         self.assertEqual(cli("review", "examples/does-not-exist")[0], 2)
 
